@@ -2,6 +2,13 @@ name: full-btc-5m-walk-forward
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/full-btc-5m-walk-forward.yml'
+      - 'scripts/run_btc_5m_full_history_walk_forward.py'
+      - 'polymarket_crypto_5min/**'
+      - 'tests/**'
 
 jobs:
   full-walk-forward:
