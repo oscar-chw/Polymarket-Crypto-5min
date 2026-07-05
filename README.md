@@ -75,7 +75,16 @@ Outputs:
 ```text
 data/processed/training_frame.csv
 data/processed/threshold_report.csv
+data/processed/default_strategy_trades.csv
 data/processed/default_strategy_summary.csv
+data/processed/default_strategy_metrics.csv
+data/processed/default_strategy_equity_curve.csv
+```
+
+`default_strategy_metrics.csv` includes overall and per-bucket win rate, ROI, trade Sharpe, daily Sharpe, Sortino, maximum drawdown in USDC and percent, profit factor, and average EV. Use `--initial-capital` to change the denominator used for equity/drawdown percentages and daily returns:
+
+```bash
+python scripts/backtest_thresholds.py --initial-capital 1000 --stake 10
 ```
 
 The report searches both buckets independently. Good candidate threshold rows should have enough trades, positive ROI, realistic average buy prices, and stable performance across nearby thresholds. Do not pick the single best row blindly; that is usually overfitting.
@@ -122,6 +131,7 @@ polymarket_crypto_5min/
   downloader.py    # market discovery, flattening, price/trade/candle downloads
   features.py      # point-in-time features and EV math
   backtest.py      # threshold grids and fixed-stake simulation
+  metrics.py       # Sharpe, Sortino, max drawdown, equity curve
   live_signal.py   # dry-run live scanner
 scripts/
   download_history.py
