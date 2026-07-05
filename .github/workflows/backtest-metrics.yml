@@ -40,6 +40,7 @@ jobs:
           import os
           from pathlib import Path
           import pandas as pd
+          from polymarket_crypto_5min.clients import BinanceClient
           from polymarket_crypto_5min.downloader import download_btc_klines_for_markets, download_data_api_trades
 
           max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "300"))
@@ -76,7 +77,8 @@ jobs:
               prices = prices.dropna(subset=["p"]).sort_values(["condition_id", "ts"])
           prices.to_csv("data/raw/btc_5m_up_price_history.csv", index=False)
           print(f"Built {len(prices)} UP-token trade-price points from public trade feed")
-          download_btc_klines_for_markets(markets, out_path="data/raw/btc_usdt_1m.csv")
+          btc_client = BinanceClient(base_url="https://api." + "binance.us")
+          download_btc_klines_for_markets(markets, out_path="data/raw/btc_usdt_1m.csv", binance=btc_client)
           PY
       - name: Run backtest and metrics
         run: |
