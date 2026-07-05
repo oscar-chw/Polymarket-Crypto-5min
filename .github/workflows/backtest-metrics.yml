@@ -15,7 +15,7 @@ jobs:
       BACKTEST_START_DATE: "2026-07-01T00:00:00Z"
       BACKTEST_INITIAL_CAPITAL: "1000"
       BACKTEST_STAKE: "10"
-      BACKTEST_MAX_MARKETS: "300"
+      BACKTEST_MAX_MARKETS: "100"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,13 +43,13 @@ jobs:
           from polymarket_crypto_5min.clients import BinanceClient
           from polymarket_crypto_5min.downloader import download_btc_klines_for_markets, download_data_api_trades
 
-          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "300"))
+          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "100"))
           markets_path = Path("data/raw/btc_5m_markets.csv")
           markets = pd.read_csv(markets_path).sort_values("start_ts").tail(max_markets).reset_index(drop=True)
           markets.to_csv(markets_path, index=False)
           print(f"Using {len(markets)} markets from {markets.start_iso.min()} to {markets.end_iso.max()}")
 
-          trades = download_data_api_trades(markets, out_path="data/raw/btc_5m_data_api_trades.csv", batch_size=20, sleep_s=0.05)
+          trades = download_data_api_trades(markets, out_path="data/raw/btc_5m_data_api_trades.csv", batch_size=1, sleep_s=0.02)
           up_ids = set(markets["up_asset_id"].astype(str))
           records = []
           for _, trade in trades.iterrows():
