@@ -15,7 +15,7 @@ jobs:
       BACKTEST_START_DATE: "2026-07-01T00:00:00Z"
       BACKTEST_INITIAL_CAPITAL: "1000"
       BACKTEST_STAKE: "10"
-      BACKTEST_MAX_MARKETS: "40"
+      BACKTEST_MAX_MARKETS: "300"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,14 +40,42 @@ jobs:
           import os
           from pathlib import Path
           import pandas as pd
-          from polymarket_crypto_5min.downloader import download_btc_klines_for_markets, download_polymarket_price_history
+          from polymarket_crypto_5min.downloader import download_btc_klines_for_markets, download_data_api_trades
 
-          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "40"))
+          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "300"))
           markets_path = Path("data/raw/btc_5m_markets.csv")
           markets = pd.read_csv(markets_path).sort_values("start_ts").tail(max_markets).reset_index(drop=True)
           markets.to_csv(markets_path, index=False)
           print(f"Using {len(markets)} markets from {markets.start_iso.min()} to {markets.end_iso.max()}")
-          download_polymarket_price_history(markets, out_path="data/raw/btc_5m_up_price_history.csv", sleep_s=0.02)
+
+          trades = download_data_api_trades(markets, out_path="data/raw/btc_5m_data_api_trades.csv", batch_size=20, sleep_s=0.05)
+          up_ids = set(markets["up_asset_id"].astype(str))
+          records = []
+          for _, trade in trades.iterrows():
+              asset = str(trade.get("asset") or trade.get("asset_id") or trade.get("token_id") or trade.get("tokenId") or "")
+              outcome = str(trade.get("outcome") or trade.get("outcomeName") or "").lower()
+              if asset and asset not in up_ids and outcome not in {"up", "higher", "yes"}:
+                  continue
+              condition_id = trade.get("conditionId") or trade.get("condition_id") or trade.get("market") or trade.get("marketId")
+              price = trade.get("price")
+              timestamp = trade.get("timestamp") or trade.get("time") or trade.get("createdAt")
+              if condition_id is None or price is None or timestamp is None:
+                  continue
+              ts = pd.to_datetime(timestamp, unit="s", utc=True, errors="coerce")
+              if pd.isna(ts):
+                  ts = pd.to_datetime(timestamp, utc=True, errors="coerce")
+              if pd.isna(ts):
+                  continue
+              if not asset:
+                  matched = markets.loc[markets["condition_id"].astype(str).eq(str(condition_id)), "up_asset_id"]
+                  asset = str(matched.iloc[0]) if not matched.empty else ""
+              records.append({"condition_id": condition_id, "market_id": None, "asset_id": asset, "asset_role": "up", "t": int(ts.timestamp()), "p": price, "ts": ts})
+          prices = pd.DataFrame(records)
+          if not prices.empty:
+              prices["p"] = pd.to_numeric(prices["p"], errors="coerce")
+              prices = prices.dropna(subset=["p"]).sort_values(["condition_id", "ts"])
+          prices.to_csv("data/raw/btc_5m_up_price_history.csv", index=False)
+          print(f"Built {len(prices)} UP-token trade-price points from public trade feed")
           download_btc_klines_for_markets(markets, out_path="data/raw/btc_usdt_1m.csv")
           PY
       - name: Run backtest and metrics
