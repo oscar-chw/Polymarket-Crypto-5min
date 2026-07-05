@@ -1,0 +1,39 @@
+name: full-btc-5m-walk-forward
+
+on:
+  workflow_dispatch:
+
+jobs:
+  full-walk-forward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Run full BTC 5m walk-forward
+        run: |
+          set -euxo pipefail
+          python scripts/run_btc_5m_full_history_walk_forward.py \
+            --initial-capital 2000 \
+            --stake 10 \
+            --train-markets 400 \
+            --test-markets 100 \
+            --price-source both
+      - name: Upload outputs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-btc-5m-walk-forward
+          path: |
+            data/raw/full_btc_5m/*.csv
+            data/processed/full_btc_5m_walk_forward/*.csv
+            data/processed/full_btc_5m_walk_forward/*.json
+          if-no-files-found: ignore
