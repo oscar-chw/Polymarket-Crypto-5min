@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-crypto-5min"
+version = "0.1.0"
+description = "Research tooling for Polymarket Bitcoin 5-minute up/down markets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Polymarket-Crypto-5min contributors" }]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "python-dateutil>=2.8",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+live = ["websockets>=12.0"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["polymarket_crypto_5min*"]
