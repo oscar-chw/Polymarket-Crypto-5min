@@ -10,11 +10,12 @@ on:
 jobs:
   run-backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     env:
       BACKTEST_START_DATE: "2026-07-01T00:00:00Z"
       BACKTEST_INITIAL_CAPITAL: "1000"
       BACKTEST_STAKE: "10"
+      BACKTEST_MAX_MARKETS: "300"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,13 +27,29 @@ jobs:
           pip install -e .[dev]
       - name: Run unit tests
         run: python -m pytest -q
-      - name: Download recent closed Bitcoin 5-minute markets
+      - name: Download bounded recent closed Bitcoin 5-minute sample
         run: |
           set -euxo pipefail
           python scripts/download_history.py \
             --start-date-min "$BACKTEST_START_DATE" \
+            --skip-clob-history \
             --skip-trades \
+            --skip-binance \
             --log-level INFO
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pandas as pd
+          from polymarket_crypto_5min.downloader import download_btc_klines_for_markets, download_polymarket_price_history
+
+          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "300"))
+          markets_path = Path("data/raw/btc_5m_markets.csv")
+          markets = pd.read_csv(markets_path).sort_values("start_ts").tail(max_markets).reset_index(drop=True)
+          markets.to_csv(markets_path, index=False)
+          print(f"Using {len(markets)} markets from {markets.start_iso.min()} to {markets.end_iso.max()}")
+          download_polymarket_price_history(markets, out_path="data/raw/btc_5m_up_price_history.csv", sleep_s=0.02)
+          download_btc_klines_for_markets(markets, out_path="data/raw/btc_usdt_1m.csv")
+          PY
       - name: Run backtest and metrics
         run: |
           set -euxo pipefail
@@ -40,9 +57,9 @@ jobs:
             --initial-capital "$BACKTEST_INITIAL_CAPITAL" \
             --stake "$BACKTEST_STAKE" \
             --min-trades 3
-          echo "---- metrics ----"
+          echo "---- default metrics ----"
           cat data/processed/default_strategy_metrics.csv || true
-          echo "---- summary ----"
+          echo "---- default summary ----"
           cat data/processed/default_strategy_summary.csv || true
           echo "---- threshold top rows ----"
           python - <<'PY'
