@@ -1,0 +1,65 @@
+name: backtest-metrics
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BACKTEST_START_DATE: "2026-07-01T00:00:00Z"
+      BACKTEST_INITIAL_CAPITAL: "1000"
+      BACKTEST_STAKE: "10"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Run unit tests
+        run: python -m pytest -q
+      - name: Download recent closed Bitcoin 5-minute markets
+        run: |
+          set -euxo pipefail
+          python scripts/download_history.py \
+            --start-date-min "$BACKTEST_START_DATE" \
+            --skip-trades \
+            --log-level INFO
+      - name: Run backtest and metrics
+        run: |
+          set -euxo pipefail
+          python scripts/backtest_thresholds.py \
+            --initial-capital "$BACKTEST_INITIAL_CAPITAL" \
+            --stake "$BACKTEST_STAKE" \
+            --min-trades 3
+          echo "---- metrics ----"
+          cat data/processed/default_strategy_metrics.csv || true
+          echo "---- summary ----"
+          cat data/processed/default_strategy_summary.csv || true
+          echo "---- threshold top rows ----"
+          python - <<'PY'
+          import pandas as pd
+          p='data/processed/threshold_report.csv'
+          try:
+              df=pd.read_csv(p)
+              print(df.head(20).to_string(index=False))
+          except Exception as exc:
+              print(f'could not print threshold report: {exc}')
+          PY
+      - name: Upload backtest outputs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backtest-outputs
+          path: |
+            data/raw/*.csv
+            data/processed/*.csv
+          if-no-files-found: ignore
