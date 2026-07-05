@@ -121,7 +121,7 @@ def _metrics_for_group(
 def _daily_equity_returns(curve: pd.DataFrame, *, initial_capital: float) -> pd.Series:
     if curve.empty or "time" not in curve.columns:
         return pd.Series(dtype=float)
-    if not np.issubdtype(curve["time"].dtype, np.datetime64):
+    if not pd.api.types.is_datetime64_any_dtype(curve["time"]):
         return pd.Series(dtype=float)
     daily_pnl = curve.set_index("time")["pnl_usdc"].resample("1D").sum()
     equity_start = initial_capital + daily_pnl.cumsum().shift(1).fillna(0.0)
