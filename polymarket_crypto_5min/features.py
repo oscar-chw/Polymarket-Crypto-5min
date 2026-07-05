@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .config import DEFAULT_CRYPTO_TAKER_FEE_RATE
+from .resolution import append_resolved_outcomes
 from .utils import parse_jsonish, sigmoid, to_float
 
 
@@ -26,7 +27,16 @@ def load_markets(path: str | Path) -> pd.DataFrame:
     for col in ["outcomes", "outcome_prices", "clob_token_ids"]:
         if col in frame.columns:
             frame[col] = frame[col].apply(lambda value: parse_jsonish(value, []))
-    for col in ["start_ts", "end_ts", "gamma_up_price", "gamma_down_price", "best_bid", "best_ask", "last_trade_price"]:
+    for col in [
+        "start_ts",
+        "end_ts",
+        "duration_seconds",
+        "gamma_up_price",
+        "gamma_down_price",
+        "best_bid",
+        "best_ask",
+        "last_trade_price",
+    ]:
         if col in frame.columns:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
     return frame
@@ -68,12 +78,18 @@ def build_training_frame(
     probability_noise_bps: float = 8.0,
     fee_rate: float = DEFAULT_CRYPTO_TAKER_FEE_RATE,
     allow_gamma_prices: bool = False,
+    require_resolved_outcome: bool = True,
+    allow_external_btc_outcome_fallback: bool = False,
 ) -> pd.DataFrame:
     """Build one point-in-time row per market for threshold research.
 
-    By default, the function only uses CLOB price history for historical market
-    prices. Set ``allow_gamma_prices=True`` for exploratory work only; Gamma
-    prices on closed markets may be post-resolution and therefore look-ahead.
+    Important correctness rule: the payout label comes from settled Polymarket
+    outcome data, not from external BTC candles. BTC candles are features only.
+    Set ``allow_external_btc_outcome_fallback=True`` only for diagnostics.
+
+    By default, market entry prices are read from point-in-time CLOB/trade price
+    history. Set ``allow_gamma_prices=True`` only for exploratory debugging;
+    closed-market Gamma prices may contain post-resolution information.
     """
     required = {"condition_id", "start_ts", "end_ts"}
     missing = required - set(markets.columns)
@@ -100,8 +116,16 @@ def build_training_frame(
     rows["abs_score_bps"] = rows["score_bps"].abs()
     rows["momentum_1m_bps"] = (rows["btc_snapshot"] / rows["btc_1m_ago"] - 1.0) * 10_000
     rows["momentum_3m_bps"] = (rows["btc_snapshot"] / rows["btc_3m_ago"] - 1.0) * 10_000
-    rows["realized_up"] = rows["btc_end"] > rows["btc_start"]
-    rows["realized_direction"] = np.where(rows["realized_up"], "UP", "DOWN")
+    rows["btc_external_direction"] = np.where(rows["btc_end"] > rows["btc_start"], "UP", "DOWN")
+
+    rows = append_resolved_outcomes(
+        rows,
+        require_resolved=require_resolved_outcome,
+        allow_external_btc_fallback=allow_external_btc_outcome_fallback,
+        external_direction_col="btc_external_direction",
+    )
+    if rows.empty:
+        return rows
 
     rows["market_up_price"] = market_price_asof(poly_price_history, rows, asset_col="up_asset_id")
     if "market_down_price" not in rows:
@@ -129,10 +153,10 @@ def build_training_frame(
     rows["fee_per_share"] = taker_fee_per_share(rows["market_price"], fee_rate=fee_rate)
     rows["expected_value_per_share"] = rows["chosen_prob"] - rows["market_price"] - rows["fee_per_share"]
     rows["won"] = rows["chosen_direction"].eq(rows["realized_direction"])
-    rows["profit_per_share"] = np.where(
-        rows["won"],
-        1.0 - rows["market_price"] - rows["fee_per_share"],
-        -rows["market_price"] - rows["fee_per_share"],
+    rows["profit_per_share"] = profit_per_share(
+        price=rows["market_price"],
+        won=rows["won"],
+        fee_rate=fee_rate,
     )
     return rows.reset_index(drop=True)
 
@@ -157,10 +181,13 @@ def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataF
     if poly_price_history is None or poly_price_history.empty or asset_col not in markets.columns:
         return pd.Series(np.nan, index=markets.index)
     hist = poly_price_history.copy()
+    if not {"condition_id", "asset_id", "ts", "p"}.issubset(hist.columns):
+        return pd.Series(np.nan, index=markets.index)
     hist["condition_id"] = hist["condition_id"].astype(str)
     hist["asset_id"] = hist["asset_id"].astype(str)
     hist["ts"] = pd.to_datetime(hist["ts"], utc=True, errors="coerce")
     hist["p"] = pd.to_numeric(hist["p"], errors="coerce")
+    hist = hist.dropna(subset=["condition_id", "asset_id", "ts", "p"])
     result = pd.Series(np.nan, index=markets.index, dtype="float64")
     # Groupwise merge_asof is robust and easy to audit for this dataset size.
     for condition_id, group in markets.groupby(markets["condition_id"].astype(str)):
@@ -189,9 +216,9 @@ def model_probability_up(
 ) -> pd.Series:
     """Heuristic probability that the final outcome resolves UP.
 
-    This is intentionally simple and should be calibrated by backtest. The most
-    important driver is distance from the market's start BTC price. Momentum is a
-    small secondary term.
+    This is intentionally simple and should be calibrated by walk-forward
+    backtesting. The most important driver is distance from the market's start
+    BTC price. Momentum is a small secondary term.
     """
     time_scale = np.sqrt(np.maximum(pd.to_numeric(seconds_left, errors="coerce"), 1.0) / 60.0)
     denom = np.maximum(noise_bps * time_scale, 1.0)
@@ -212,6 +239,15 @@ def taker_fee_per_share(price: Any, *, fee_rate: float = DEFAULT_CRYPTO_TAKER_FE
     if math.isnan(p):
         return math.nan
     return fee_rate * p * (1.0 - p)
+
+
+def profit_per_share(price: Any, won: Any, *, fee_rate: float = DEFAULT_CRYPTO_TAKER_FEE_RATE) -> Any:
+    p = pd.to_numeric(price, errors="coerce") if isinstance(price, pd.Series) else to_float(price)
+    fee = taker_fee_per_share(p, fee_rate=fee_rate)
+    if isinstance(price, pd.Series):
+        won_series = pd.Series(won, index=price.index).astype(bool) if not isinstance(won, pd.Series) else won.astype(bool)
+        return np.where(won_series, 1.0 - p - fee, -p - fee)
+    return (1.0 - p - fee) if bool(won) else (-p - fee)
 
 
 def shares_for_stake(stake_usdc: float, price: float, fee_rate: float = DEFAULT_CRYPTO_TAKER_FEE_RATE) -> float:
