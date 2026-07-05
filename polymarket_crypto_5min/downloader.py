@@ -6,18 +6,21 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from .clients import BinanceClient, ClobClient, DataApiClient, GammaClient
-from .utils import any_substring, iso_utc, normalize_text, parse_jsonish, to_float, unix_seconds
+from .clients import ApiError, BinanceClient, ClobClient, DataApiClient, GammaClient
+from .utils import any_substring, iso_utc, normalize_text, parse_dt, parse_jsonish, to_float, unix_seconds
 
 LOGGER = logging.getLogger(__name__)
 
 MAX_DATA_API_LIMIT = 10_000
 MAX_DATA_API_OFFSET = 10_000
+NY_TZ = ZoneInfo("America/New_York")
 
 BITCOIN_NEEDLES = ("bitcoin", "btc")
 FIVE_MIN_NEEDLES = (
@@ -32,6 +35,12 @@ FIVE_MIN_NEEDLES = (
     "five minutes",
 )
 DIRECTION_NEEDLES = ("up or down", "up/down", "higher", "lower", "above", "below", "up", "down")
+WINDOW_RE = re.compile(
+    r"(?P<month>[A-Za-z]+)\s+(?P<day>\d{1,2}),\s*"
+    r"(?P<shour>\d{1,2})(?::(?P<sminute>\d{2}))?\s*(?P<sampm>AM|PM)\s*[-–]\s*"
+    r"(?P<ehour>\d{1,2})(?::(?P<eminute>\d{2}))?\s*(?P<eampm>AM|PM)\s*(?:ET|EST|EDT)?",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -43,12 +52,7 @@ class DownloadSummary:
 
 
 def is_bitcoin_5min_event(event: dict[str, Any]) -> bool:
-    """Return True for likely Bitcoin five-minute up/down events.
-
-    Polymarket naming has changed over time, so the detector uses a permissive
-    text match across event and nested market fields. The downloader stores the
-    raw fields too, so downstream review can audit false positives.
-    """
+    """Return True for likely Bitcoin five-minute up/down events."""
     market_text = " ".join(
         normalize_text(
             market.get("question"),
@@ -72,10 +76,7 @@ def is_bitcoin_5min_event(event: dict[str, Any]) -> bool:
         tag_text,
         market_text,
     )
-    has_five_min_hint = any_substring(text, FIVE_MIN_NEEDLES) or re.search(
-        r"\b\d{1,2}:?\d{2}\s*(?:am|pm)?\s*[-–]\s*\d{1,2}:?\d{2}\s*(?:am|pm)?\b",
-        text,
-    )
+    has_five_min_hint = any_substring(text, FIVE_MIN_NEEDLES) or WINDOW_RE.search(text)
     return (
         any_substring(text, BITCOIN_NEEDLES)
         and bool(has_five_min_hint)
@@ -118,6 +119,16 @@ def flatten_market(event: dict[str, Any], market: dict[str, Any]) -> dict[str, A
     closed_time = market.get("closedTime") or event.get("closedTime")
     condition_id = market.get("conditionId") or market.get("condition_id") or market.get("market")
 
+    question_text = market.get("question") or event.get("title") or market.get("slug") or event.get("slug") or ""
+    fallback_year = infer_year(event, market)
+    parsed_window = parse_market_window_from_text(question_text, fallback_year=fallback_year)
+    if parsed_window is not None:
+        start_date, end_date = parsed_window
+
+    start_ts = unix_seconds(start_date)
+    end_ts = unix_seconds(end_date)
+    duration_seconds = end_ts - start_ts if start_ts is not None and end_ts is not None else None
+
     return {
         "event_id": event.get("id"),
         "event_slug": event.get("slug"),
@@ -130,8 +141,9 @@ def flatten_market(event: dict[str, Any], market: dict[str, Any]) -> dict[str, A
         "condition_id": condition_id,
         "market_slug": market.get("slug"),
         "question": market.get("question"),
-        "start_ts": unix_seconds(start_date),
-        "end_ts": unix_seconds(end_date),
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "duration_seconds": duration_seconds,
         "start_iso": iso_utc(start_date),
         "end_iso": iso_utc(end_date),
         "closed_time": iso_utc(closed_time),
@@ -157,11 +169,58 @@ def flatten_market(event: dict[str, Any], market: dict[str, Any]) -> dict[str, A
     }
 
 
-def infer_up_down_assets(*, outcomes: list[str], token_ids: list[str], question: str) -> tuple[str | None, str | None]:
-    """Map outcome labels/token IDs to UP and DOWN assets.
+def parse_market_window_from_text(text: str, *, fallback_year: int | None = None) -> tuple[datetime, datetime] | None:
+    """Parse titles like ``Bitcoin Up or Down - July 2, 5:30PM-5:35PM ET``.
 
-    If the market is expressed as Yes/No, infer what Yes means from the question.
+    Gamma often stores the event start/end as a full UTC day for these markets;
+    the actual tradable five-minute window is embedded in the market title.
     """
+    match = WINDOW_RE.search(str(text or ""))
+    if not match:
+        return None
+    year = fallback_year or datetime.now(timezone.utc).year
+    month_name = match.group("month").title()
+    try:
+        month_num = datetime.strptime(month_name[:3], "%b").month
+    except ValueError:
+        return None
+    day = int(match.group("day"))
+    shour = _to_24h(int(match.group("shour")), match.group("sampm"))
+    ehour = _to_24h(int(match.group("ehour")), match.group("eampm"))
+    sminute = int(match.group("sminute") or 0)
+    eminute = int(match.group("eminute") or 0)
+    try:
+        start_local = datetime(year, month_num, day, shour, sminute, tzinfo=NY_TZ)
+        end_local = datetime(year, month_num, day, ehour, eminute, tzinfo=NY_TZ)
+    except ValueError:
+        return None
+    if end_local <= start_local:
+        end_local += timedelta(days=1)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def infer_year(event: dict[str, Any], market: dict[str, Any]) -> int | None:
+    for value in (
+        market.get("endDateIso"),
+        market.get("endDate"),
+        event.get("endDate"),
+        market.get("closedTime"),
+        event.get("closedTime"),
+        event.get("startDate"),
+    ):
+        dt = parse_dt(value)
+        if dt is not None:
+            return dt.year
+    return None
+
+
+def _to_24h(hour: int, ampm: str) -> int:
+    hour = hour % 12
+    return hour + (12 if ampm.upper() == "PM" else 0)
+
+
+def infer_up_down_assets(*, outcomes: list[str], token_ids: list[str], question: str) -> tuple[str | None, str | None]:
+    """Map outcome labels/token IDs to UP and DOWN assets."""
     if len(outcomes) != len(token_ids) or len(token_ids) < 2:
         return None, None
 
@@ -217,11 +276,7 @@ def download_bitcoin_5min_markets(
     max_pages: int | None = None,
     sleep_s: float = 0.0,
 ) -> tuple[pd.DataFrame, DownloadSummary]:
-    """Download and flatten likely historical Bitcoin five-minute markets.
-
-    Parameters mirror Gamma's keyset endpoint. Use ``max_pages`` while testing;
-    leave it unset for a full crawl.
-    """
+    """Download and flatten likely historical Bitcoin five-minute markets."""
     gamma = gamma or GammaClient()
     params = {
         "closed": closed,
@@ -247,8 +302,11 @@ def download_bitcoin_5min_markets(
         if sleep_s:
             time.sleep(sleep_s)
 
-    frame = pd.DataFrame(rows).drop_duplicates(subset=["condition_id", "market_id", "up_asset_id"])
+    frame = pd.DataFrame(rows)
     if not frame.empty:
+        frame = frame.drop_duplicates(subset=["condition_id", "market_id", "up_asset_id"])
+        frame["duration_seconds"] = pd.to_numeric(frame["duration_seconds"], errors="coerce")
+        frame = frame[frame["duration_seconds"].between(240, 420, inclusive="both")].copy()
         frame = frame.sort_values(["end_ts", "condition_id"], na_position="last").reset_index(drop=True)
     if out_path is not None:
         out_path = Path(out_path)
@@ -274,7 +332,7 @@ def download_polymarket_price_history(
     pad_seconds: int = 600,
     sleep_s: float = 0.05,
 ) -> pd.DataFrame:
-    """Download CLOB price history for each market's UP token."""
+    """Download CLOB price history for each market's selected token."""
     clob = clob or ClobClient()
     records: list[dict[str, Any]] = []
     required = {asset_column, "condition_id", "start_ts", "end_ts"}
@@ -288,13 +346,17 @@ def download_polymarket_price_history(
         end_ts = row.get("end_ts")
         if pd.isna(asset_id) or pd.isna(start_ts) or pd.isna(end_ts):
             continue
-        history = clob.prices_history(
-            str(asset_id),
-            start_ts=int(start_ts) - pad_seconds,
-            end_ts=int(end_ts) + pad_seconds,
-            interval=interval,
-            fidelity=fidelity,
-        )
+        try:
+            history = clob.prices_history(
+                str(asset_id),
+                start_ts=int(start_ts) - pad_seconds,
+                end_ts=int(end_ts) + pad_seconds,
+                interval=interval,
+                fidelity=fidelity,
+            )
+        except ApiError as exc:
+            LOGGER.warning("Skipping price history for %s: %s", asset_id, exc)
+            continue
         for point in history:
             records.append(
                 {
@@ -330,12 +392,7 @@ def download_data_api_trades(
     batch_size: int = 20,
     sleep_s: float = 0.1,
 ) -> pd.DataFrame:
-    """Download public Data API trade rows for condition IDs.
-
-    This endpoint is public and paginated by offset. It is useful for broad trade
-    history, while CLOB authenticated ``/data/trades`` is for the caller's own
-    trades.
-    """
+    """Download public Data API trade rows for condition IDs."""
     data_api = data_api or DataApiClient()
     condition_ids = [str(x) for x in markets.get("condition_id", pd.Series(dtype=str)).dropna().unique()]
     all_rows: list[dict[str, Any]] = []
@@ -347,11 +404,7 @@ def download_data_api_trades(
             all_rows.extend(trades)
             if len(trades) < MAX_DATA_API_LIMIT or offset >= MAX_DATA_API_OFFSET:
                 if len(trades) >= MAX_DATA_API_LIMIT and offset >= MAX_DATA_API_OFFSET:
-                    LOGGER.warning(
-                        "Data API offset cap reached for condition ID batch starting at %d; "
-                        "consider narrowing the date/market batch if more rows are needed",
-                        start,
-                    )
+                    LOGGER.warning("Data API offset cap reached for condition ID batch starting at %d", start)
                 break
             offset += MAX_DATA_API_LIMIT
         if sleep_s:
