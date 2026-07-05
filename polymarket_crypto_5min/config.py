@@ -10,6 +10,7 @@ GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 DATA_API_BASE_URL = "https://data-api.polymarket.com"
 CLOB_BASE_URL = "https://clob.polymarket.com"
 BINANCE_BASE_URL = "https://api.binance.com"
+COINBASE_EXCHANGE_BASE_URL = "https://api.exchange.coinbase.com"
 
 # Current Polymarket crypto taker fee formula is:
 #   fee_per_share = fee_rate * price * (1 - price)
