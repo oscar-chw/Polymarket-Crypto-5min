@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/full-btc-5m-walk-forward.yml'
       - 'scripts/run_btc_5m_full_history_walk_forward.py'
+      - 'scripts/exit_aware_walk_forward.py'
       - 'polymarket_crypto_5min/**'
       - 'tests/**'
   pull_request:
@@ -14,6 +15,7 @@ on:
     paths:
       - '.github/workflows/full-btc-5m-walk-forward.yml'
       - 'scripts/run_btc_5m_full_history_walk_forward.py'
+      - 'scripts/exit_aware_walk_forward.py'
       - 'polymarket_crypto_5min/**'
       - 'tests/**'
 
@@ -41,6 +43,14 @@ jobs:
             --train-markets 400 \
             --test-markets 100 \
             --price-source both
+      - name: Run exit-aware walk-forward
+        run: |
+          set -euxo pipefail
+          python scripts/exit_aware_walk_forward.py \
+            --initial-capital 2000 \
+            --stake 10 \
+            --train-markets 400 \
+            --test-markets 100
       - name: Upload outputs
         uses: actions/upload-artifact@v4
         if: always()
@@ -50,4 +60,6 @@ jobs:
             data/raw/full_btc_5m/*.csv
             data/processed/full_btc_5m_walk_forward/*.csv
             data/processed/full_btc_5m_walk_forward/*.json
+            data/processed/exit_aware_walk_forward/*.csv
+            data/processed/exit_aware_walk_forward/*.json
           if-no-files-found: ignore
