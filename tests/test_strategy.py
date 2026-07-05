@@ -5,6 +5,7 @@ import pandas as pd
 from polymarket_crypto_5min.backtest import StrategyThresholds, simulate_strategy, summarize_trades
 from polymarket_crypto_5min.downloader import infer_up_down_assets, is_bitcoin_5min_event
 from polymarket_crypto_5min.features import build_training_frame, taker_fee_per_share
+from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
 
 
 def test_event_detector_and_asset_mapping() -> None:
@@ -103,3 +104,9 @@ def test_build_training_frame_and_simulate() -> None:
     assert len(trades) >= 1
     summary = summarize_trades(trades)
     assert not summary.empty
+
+    curve = equity_curve(trades, initial_capital=1000)
+    assert {"equity", "drawdown_usdc", "drawdown_pct"}.issubset(curve.columns)
+    metrics = performance_metrics(trades, initial_capital=1000)
+    assert {"trade_sharpe", "daily_sharpe", "max_drawdown_pct", "max_drawdown_usdc"}.issubset(metrics.columns)
+    assert metrics.loc[0, "bucket"] == "ALL"
