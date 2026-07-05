@@ -16,6 +16,9 @@ from .utils import any_substring, iso_utc, normalize_text, parse_jsonish, to_flo
 
 LOGGER = logging.getLogger(__name__)
 
+MAX_DATA_API_LIMIT = 10_000
+MAX_DATA_API_OFFSET = 10_000
+
 BITCOIN_NEEDLES = ("bitcoin", "btc")
 FIVE_MIN_NEEDLES = (
     "5m",
@@ -340,14 +343,17 @@ def download_data_api_trades(
         batch = condition_ids[start : start + batch_size]
         offset = 0
         while True:
-            trades = data_api.trades(market=batch, limit=10_000, offset=offset, taker_only=True)
+            trades = data_api.trades(market=batch, limit=MAX_DATA_API_LIMIT, offset=offset, taker_only=True)
             all_rows.extend(trades)
-            if len(trades) < 10_000:
+            if len(trades) < MAX_DATA_API_LIMIT or offset >= MAX_DATA_API_OFFSET:
+                if len(trades) >= MAX_DATA_API_LIMIT and offset >= MAX_DATA_API_OFFSET:
+                    LOGGER.warning(
+                        "Data API offset cap reached for condition ID batch starting at %d; "
+                        "consider narrowing the date/market batch if more rows are needed",
+                        start,
+                    )
                 break
-            offset += 10_000
-            if offset > 1_000_000:
-                LOGGER.warning("Stopping trade pagination for batch at offset %s", offset)
-                break
+            offset += MAX_DATA_API_LIMIT
         if sleep_s:
             time.sleep(sleep_s)
     frame = pd.DataFrame(all_rows)
