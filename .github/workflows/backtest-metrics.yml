@@ -10,12 +10,12 @@ on:
 jobs:
   run-backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       BACKTEST_START_DATE: "2026-07-01T00:00:00Z"
       BACKTEST_INITIAL_CAPITAL: "1000"
       BACKTEST_STAKE: "10"
-      BACKTEST_MAX_MARKETS: "300"
+      BACKTEST_MAX_MARKETS: "40"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,7 +42,7 @@ jobs:
           import pandas as pd
           from polymarket_crypto_5min.downloader import download_btc_klines_for_markets, download_polymarket_price_history
 
-          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "300"))
+          max_markets = int(os.environ.get("BACKTEST_MAX_MARKETS", "40"))
           markets_path = Path("data/raw/btc_5m_markets.csv")
           markets = pd.read_csv(markets_path).sort_values("start_ts").tail(max_markets).reset_index(drop=True)
           markets.to_csv(markets_path, index=False)
