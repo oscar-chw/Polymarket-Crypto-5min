@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -23,30 +24,69 @@ class MetricConfig:
 
 
 def equity_curve(trades: pd.DataFrame, *, initial_capital: float = 1_000.0) -> pd.DataFrame:
-    """Return an equity curve from per-trade PnL.
+    """Return a realized equity curve from per-trade PnL.
 
-    The backtester produces fixed-stake trades. This function treats each trade's
-    PnL as realized at ``end_dt`` when present, otherwise at ``snapshot_dt`` or
-    input order.
+    The curve is anchored to an explicit starting row at ``initial_capital`` so a
+    first-trade loss is counted as drawdown. This is realized equity only: it
+    does not mark open positions to market between entry and resolution.
     """
+    columns = [
+        "time",
+        "pnl_usdc",
+        "cum_pnl_usdc",
+        "equity",
+        "running_peak",
+        "drawdown_usdc",
+        "drawdown_pct",
+        "is_initial_row",
+    ]
     if trades.empty:
-        return pd.DataFrame(columns=["time", "pnl_usdc", "cum_pnl_usdc", "equity", "drawdown_usdc", "drawdown_pct"])
+        return pd.DataFrame(columns=columns)
+
     frame = trades.copy()
     if "end_dt" in frame.columns:
         frame["time"] = pd.to_datetime(frame["end_dt"], utc=True, errors="coerce")
     elif "snapshot_dt" in frame.columns:
         frame["time"] = pd.to_datetime(frame["snapshot_dt"], utc=True, errors="coerce")
     else:
-        frame["time"] = pd.RangeIndex(len(frame))
+        frame["time"] = pd.RangeIndex(1, len(frame) + 1)
     frame["pnl_usdc"] = pd.to_numeric(frame["pnl_usdc"], errors="coerce").fillna(0.0)
     frame = frame.sort_values("time").reset_index(drop=True)
+
     curve = frame[["time", "pnl_usdc"]].copy()
+    initial_time = _initial_time(curve["time"])
+    initial_row = pd.DataFrame(
+        {
+            "time": [initial_time],
+            "pnl_usdc": [0.0],
+            "is_initial_row": [True],
+        }
+    )
+    curve["is_initial_row"] = False
+    curve = pd.concat([initial_row, curve], ignore_index=True).sort_values("time", kind="stable").reset_index(drop=True)
     curve["cum_pnl_usdc"] = curve["pnl_usdc"].cumsum()
     curve["equity"] = initial_capital + curve["cum_pnl_usdc"]
     curve["running_peak"] = curve["equity"].cummax()
+    # The initial row ensures running_peak starts at initial_capital, not after a
+    # first loss. This fixes the common MDD understatement bug.
     curve["drawdown_usdc"] = curve["equity"] - curve["running_peak"]
     curve["drawdown_pct"] = curve["drawdown_usdc"] / curve["running_peak"].replace(0, np.nan)
-    return curve.drop(columns=["running_peak"])
+    return curve[columns]
+
+
+def _initial_time(times: pd.Series) -> Any:
+    if len(times) == 0:
+        return 0
+    first = times.iloc[0]
+    if isinstance(first, pd.Timestamp):
+        return first - pd.Timedelta(microseconds=1)
+    if pd.api.types.is_datetime64_any_dtype(times):
+        first_ts = pd.to_datetime(first, utc=True)
+        return first_ts - pd.Timedelta(microseconds=1)
+    try:
+        return first - 1
+    except TypeError:
+        return -1
 
 
 def performance_metrics(
@@ -61,9 +101,10 @@ def performance_metrics(
 
     - ``trade_sharpe``: mean per-trade return divided by per-trade return std.
       This is not annualized and is often the safest first look for 5-minute bets.
-    - ``daily_sharpe``: Sharpe on daily equity returns, annualized by sqrt(365).
+    - ``daily_sharpe``: Sharpe on daily realized equity returns, annualized by
+      sqrt(365).
     - ``max_drawdown_pct`` / ``max_drawdown_usdc``: worst peak-to-trough loss on
-      the realized equity curve.
+      the realized equity curve anchored at initial capital.
     """
     rows: list[dict[str, float | int | str]] = []
     if trades.empty:
@@ -87,11 +128,14 @@ def _metrics_for_group(
     stake = pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").replace(0, np.nan)
     returns = pd.to_numeric(trades.get("return_on_stake", pnl / stake), errors="coerce").dropna()
     curve = equity_curve(trades, initial_capital=initial_capital)
+    curve_no_initial = curve[~curve.get("is_initial_row", pd.Series(False, index=curve.index)).astype(bool)]
     daily_returns = _daily_equity_returns(curve, initial_capital=initial_capital)
     gross_profit = float(pnl[pnl > 0].sum())
     gross_loss = float(-pnl[pnl < 0].sum())
     total_stake = float(pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum())
     total_pnl = float(pnl.sum())
+    max_dd_usdc = float(curve["drawdown_usdc"].min()) if not curve.empty else math.nan
+    max_dd_pct = float(curve["drawdown_pct"].min()) if not curve.empty else math.nan
     return {
         "bucket": label,
         "trades": int(len(trades)),
@@ -108,20 +152,24 @@ def _metrics_for_group(
         "trade_sharpe": _sharpe(returns, annualization=None),
         "daily_sharpe": _sharpe(daily_returns, annualization=math.sqrt(periods_per_year)),
         "daily_sortino": _sortino(daily_returns, annualization=math.sqrt(periods_per_year)),
-        "max_drawdown_usdc": float(curve["drawdown_usdc"].min()) if not curve.empty else math.nan,
-        "max_drawdown_pct": float(curve["drawdown_pct"].min()) if not curve.empty else math.nan,
+        "max_drawdown_usdc": max_dd_usdc,
+        "max_drawdown_pct": max_dd_pct,
         "profit_factor": gross_profit / gross_loss if gross_loss else math.inf,
         "gross_profit_usdc": gross_profit,
         "gross_loss_usdc": gross_loss,
         "avg_market_price": _safe_mean(pd.to_numeric(trades.get("market_price", pd.Series(dtype=float)), errors="coerce")),
         "avg_ev_per_share": _safe_mean(pd.to_numeric(trades.get("expected_value_per_share", pd.Series(dtype=float)), errors="coerce")),
+        "realized_equity_curve_only": True,
+        "mark_to_market_drawdown_available": False,
+        "min_realized_equity": float(curve_no_initial["equity"].min()) if not curve_no_initial.empty else math.nan,
     }
 
 
 def _daily_equity_returns(curve: pd.DataFrame, *, initial_capital: float) -> pd.Series:
     if curve.empty or "time" not in curve.columns:
         return pd.Series(dtype=float)
-    if not pd.api.types.is_datetime64_any_dtype(curve["time"]):
+    curve = curve[~curve.get("is_initial_row", pd.Series(False, index=curve.index)).astype(bool)].copy()
+    if curve.empty or not pd.api.types.is_datetime64_any_dtype(curve["time"]):
         return pd.Series(dtype=float)
     daily_pnl = curve.set_index("time")["pnl_usdc"].resample("1D").sum()
     equity_start = initial_capital + daily_pnl.cumsum().shift(1).fillna(0.0)
