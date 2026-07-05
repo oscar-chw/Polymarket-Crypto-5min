@@ -50,6 +50,25 @@ def test_fee_formula() -> None:
     assert round(taker_fee_per_share(0.30, fee_rate=0.07), 5) == 0.0147
 
 
+def test_equity_curve_counts_first_trade_loss_as_drawdown() -> None:
+    trades = pd.DataFrame(
+        {
+            "end_dt": pd.to_datetime([1_700_000_000, 1_700_000_300], unit="s", utc=True),
+            "pnl_usdc": [-10.0, 5.0],
+            "stake_usdc": [10.0, 10.0],
+            "return_on_stake": [-1.0, 0.5],
+            "won": [False, True],
+        }
+    )
+    curve = equity_curve(trades, initial_capital=2000)
+    assert curve.iloc[0]["is_initial_row"] is True or bool(curve.iloc[0]["is_initial_row"])
+    assert curve["drawdown_usdc"].min() == -10.0
+    metrics = performance_metrics(trades, initial_capital=2000)
+    assert metrics.loc[0, "max_drawdown_usdc"] == -10.0
+    assert round(metrics.loc[0, "max_drawdown_pct"], 4) == -0.005
+    assert metrics.loc[0, "realized_equity_curve_only"] is True or bool(metrics.loc[0, "realized_equity_curve_only"])
+
+
 def test_build_training_frame_and_simulate() -> None:
     markets = pd.DataFrame(
         [
