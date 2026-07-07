@@ -20,7 +20,6 @@ import numpy as np
 import pandas as pd
 
 from .features import shares_for_stake, taker_fee_per_share
-from .metrics import performance_metrics
 from .walk_forward import WalkForwardConfig, WalkForwardRule, calibrate_candidates, generate_rule_grid, rule_mask
 
 
@@ -74,6 +73,8 @@ def prepare_price_history(price_history: pd.DataFrame) -> pd.DataFrame:
     """Normalize CLOB/trade price history for exit simulations."""
     if price_history is None or price_history.empty:
         return pd.DataFrame(columns=["condition_id", "asset_id", "ts", "p"])
+    if price_history.attrs.get("exit_backtest_prepared"):
+        return price_history
     hist = price_history.copy()
     if "ts" in hist.columns:
         hist["ts"] = pd.to_datetime(hist["ts"], utc=True, errors="coerce")
@@ -84,9 +85,11 @@ def prepare_price_history(price_history: pd.DataFrame) -> pd.DataFrame:
     hist["condition_id"] = hist["condition_id"].astype(str)
     hist["asset_id"] = hist["asset_id"].astype(str)
     hist["p"] = pd.to_numeric(hist["p"], errors="coerce")
-    return hist.dropna(subset=["condition_id", "asset_id", "ts", "p"]).sort_values(
+    out = hist.dropna(subset=["condition_id", "asset_id", "ts", "p"]).sort_values(
         ["condition_id", "asset_id", "ts"]
     ).reset_index(drop=True)
+    out.attrs["exit_backtest_prepared"] = True
+    return out
 
 
 def attach_candidate_asset_ids(candidates: pd.DataFrame) -> pd.DataFrame:
@@ -96,9 +99,25 @@ def attach_candidate_asset_ids(candidates: pd.DataFrame) -> pd.DataFrame:
     return rows
 
 
+PriceHistoryGroups = dict[tuple[str, str], pd.DataFrame]
+
+
+def group_price_history(price_history: pd.DataFrame | PriceHistoryGroups) -> PriceHistoryGroups:
+    """Index prepared price history by market token for fast exit-path slicing."""
+    if isinstance(price_history, dict):
+        return price_history
+    hist = prepare_price_history(price_history)
+    if hist.empty:
+        return {}
+    return {
+        (str(condition_id), str(asset_id)): group.reset_index(drop=True)
+        for (condition_id, asset_id), group in hist.groupby(["condition_id", "asset_id"], sort=False)
+    }
+
+
 def simulate_exit_policy(
     entries: pd.DataFrame,
-    price_history: pd.DataFrame,
+    price_history: pd.DataFrame | PriceHistoryGroups,
     policy: ExitPolicy,
     *,
     stake_usdc: float = 10.0,
@@ -111,18 +130,24 @@ def simulate_exit_policy(
     """
     if entries.empty:
         return pd.DataFrame()
-    hist = prepare_price_history(price_history)
+    hist_by_asset = group_price_history(price_history)
     selected = attach_candidate_asset_ids(entries).copy()
     selected["condition_id"] = selected["condition_id"].astype(str)
     selected["snapshot_dt"] = pd.to_datetime(selected["snapshot_dt"], utc=True, errors="coerce")
     selected["end_dt"] = pd.to_datetime(selected["end_dt"], utc=True, errors="coerce")
     records: list[dict[str, object]] = []
     for _, entry in selected.iterrows():
-        records.append(_simulate_one_exit(entry, hist, policy, stake_usdc=stake_usdc))
+        records.append(_simulate_one_exit(entry, hist_by_asset, policy, stake_usdc=stake_usdc))
     return pd.DataFrame(records).sort_values(["entry_dt", "condition_id", "side"]).reset_index(drop=True)
 
 
-def _simulate_one_exit(entry: pd.Series, hist: pd.DataFrame, policy: ExitPolicy, *, stake_usdc: float) -> dict[str, object]:
+def _simulate_one_exit(
+    entry: pd.Series,
+    hist_by_asset: PriceHistoryGroups,
+    policy: ExitPolicy,
+    *,
+    stake_usdc: float,
+) -> dict[str, object]:
     entry_price = float(entry["market_price"])
     entry_fee = float(taker_fee_per_share(entry_price))
     shares = shares_for_stake(stake_usdc, entry_price)
@@ -137,12 +162,7 @@ def _simulate_one_exit(entry: pd.Series, hist: pd.DataFrame, policy: ExitPolicy,
     if policy.max_hold_seconds is not None:
         deadline = min(deadline, entry_dt + pd.Timedelta(seconds=int(policy.max_hold_seconds)))
 
-    path = hist[
-        hist["condition_id"].eq(condition_id)
-        & hist["asset_id"].astype(str).eq(asset_id)
-        & hist["ts"].gt(entry_dt)
-        & hist["ts"].le(deadline)
-    ].sort_values("ts")
+    path = _slice_exit_path(hist_by_asset, condition_id, asset_id, entry_dt, deadline)
 
     exit_reason = "HOLD_TO_SETTLEMENT"
     exit_dt = end_dt
@@ -178,7 +198,7 @@ def _simulate_one_exit(entry: pd.Series, hist: pd.DataFrame, policy: ExitPolicy,
         realized_settlement = False
 
     pnl_usdc = shares * pnl_per_share
-    return {
+    record = {
         "condition_id": condition_id,
         "market_id": entry.get("market_id"),
         "question": entry.get("question"),
@@ -214,6 +234,27 @@ def _simulate_one_exit(entry: pd.Series, hist: pd.DataFrame, policy: ExitPolicy,
         "calibration_scope": entry.get("calibration_scope"),
         "fold": entry.get("fold"),
     }
+    if "_candidate_row_id" in entry.index:
+        record["_candidate_row_id"] = entry.get("_candidate_row_id")
+    return record
+
+
+def _slice_exit_path(
+    hist_by_asset: PriceHistoryGroups,
+    condition_id: str,
+    asset_id: str,
+    entry_dt: pd.Timestamp,
+    deadline: pd.Timestamp,
+) -> pd.DataFrame:
+    path_source = hist_by_asset.get((condition_id, asset_id))
+    if path_source is None or path_source.empty:
+        return pd.DataFrame(columns=["condition_id", "asset_id", "ts", "p"])
+    ts = path_source["ts"]
+    start_idx = int(ts.searchsorted(entry_dt, side="right"))
+    end_idx = int(ts.searchsorted(deadline, side="right"))
+    if end_idx <= start_idx:
+        return path_source.iloc[0:0]
+    return path_source.iloc[start_idx:end_idx]
 
 
 def _exit_reason(entry_price: float, price: float, policy: ExitPolicy) -> str | None:
@@ -226,34 +267,82 @@ def _exit_reason(entry_price: float, price: float, policy: ExitPolicy) -> str | 
     return None
 
 
+def _training_score(trades: pd.DataFrame, *, initial_capital: float) -> dict[str, float]:
+    pnl = pd.to_numeric(trades["pnl_usdc"], errors="coerce").fillna(0.0)
+    stake = pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").replace(0, np.nan)
+    returns = pd.to_numeric(trades.get("return_on_stake", pnl / stake), errors="coerce").dropna()
+    std = float(returns.std(ddof=1)) if len(returns) > 1 else math.nan
+    sharpe = float(returns.mean() / std) if len(returns) > 1 and std and math.isfinite(std) else math.nan
+    total_stake = float(pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum())
+    total_pnl = float(pnl.sum())
+
+    ordered = trades.copy()
+    ordered["_score_time"] = pd.to_datetime(ordered.get("exit_dt"), utc=True, errors="coerce")
+    ordered["_score_pnl"] = pd.to_numeric(ordered["pnl_usdc"], errors="coerce").fillna(0.0)
+    ordered = ordered.sort_values("_score_time", kind="stable")
+    equity = initial_capital + ordered["_score_pnl"].cumsum().to_numpy(dtype=float)
+    running_peak = np.maximum.accumulate(np.r_[initial_capital, equity])[1:]
+    denominator = np.where(running_peak == 0, np.nan, running_peak)
+    drawdown_pct = (equity - running_peak) / denominator
+    mdd_pct = float(np.nanmin(drawdown_pct)) if len(drawdown_pct) else math.nan
+    return {
+        "train_roi": total_pnl / total_stake if total_stake else math.nan,
+        "train_trade_sharpe": sharpe,
+        "train_mdd_pct": mdd_pct,
+    }
+
+
 def select_entry_exit_rules_from_training(
     calibrated_train: pd.DataFrame,
-    price_history: pd.DataFrame,
+    price_history: pd.DataFrame | PriceHistoryGroups,
     *,
     config: WalkForwardConfig,
     entry_rules: list[WalkForwardRule] | None = None,
     exit_policies: list[ExitPolicy] | None = None,
 ) -> tuple[WalkForwardRule | None, ExitPolicy | None, dict[str, float | int]]:
     """Select an entry rule and exit policy using the training fold only."""
+    rules = entry_rules or generate_rule_grid()
+    policies = exit_policies or generate_exit_policy_grid()
+    if calibrated_train.empty or not rules or not policies:
+        return None, None, {"score": -np.inf, "train_trades": 0}
+
+    rows = calibrated_train.reset_index(drop=True).copy()
+    rows["_candidate_row_id"] = np.arange(len(rows), dtype=np.int64)
+    rule_entries: list[tuple[WalkForwardRule, np.ndarray]] = []
+    union_mask = np.zeros(len(rows), dtype=bool)
+    for entry_rule in rules:
+        mask = rule_mask(rows, entry_rule).to_numpy(dtype=bool)
+        if int(mask.sum()) < config.min_train_trades:
+            continue
+        rule_entries.append((entry_rule, rows.loc[mask, "_candidate_row_id"].to_numpy(dtype=np.int64)))
+        union_mask |= mask
+    if not rule_entries:
+        return None, None, {"score": -np.inf, "train_trades": 0}
+
+    eligible_rows = rows.loc[union_mask].copy()
     best_entry: WalkForwardRule | None = None
     best_exit: ExitPolicy | None = None
     best_score = -np.inf
     best_stats: dict[str, float | int] = {"score": -np.inf, "train_trades": 0}
-    for entry_rule in entry_rules or generate_rule_grid():
-        entries = calibrated_train[rule_mask(calibrated_train, entry_rule)].copy()
-        if len(entries) < config.min_train_trades:
+
+    for exit_policy in policies:
+        policy_trades = simulate_exit_policy(
+            eligible_rows,
+            price_history,
+            exit_policy,
+            stake_usdc=config.stake_usdc,
+        )
+        if policy_trades.empty:
             continue
-        for exit_policy in exit_policies or generate_exit_policy_grid():
-            trades = simulate_exit_policy(entries, price_history, exit_policy, stake_usdc=config.stake_usdc)
+        policy_trades = policy_trades.set_index("_candidate_row_id", drop=False)
+        for entry_rule, candidate_ids in rule_entries:
+            trades = policy_trades.loc[policy_trades.index.intersection(candidate_ids)]
             if len(trades) < config.min_train_trades:
                 continue
-            metrics = performance_metrics(_to_metrics_frame(trades), initial_capital=config.initial_capital)
-            if metrics.empty:
-                continue
-            all_metrics = metrics.iloc[0]
-            sharpe = _finite_or(float(all_metrics.get("trade_sharpe", np.nan)), -5.0)
-            roi = _finite_or(float(all_metrics.get("roi_on_stake", np.nan)), 0.0)
-            mdd = abs(_finite_or(float(all_metrics.get("max_drawdown_pct", 0.0)), 0.0))
+            stats = _training_score(trades, initial_capital=config.initial_capital)
+            sharpe = _finite_or(float(stats["train_trade_sharpe"]), -5.0)
+            roi = _finite_or(float(stats["train_roi"]), 0.0)
+            mdd = abs(_finite_or(float(stats["train_mdd_pct"]), 0.0))
             loss_rate = float((trades["pnl_usdc"] < 0).mean())
             score = sharpe + 0.25 * roi - 4.0 * mdd - 0.75 * loss_rate
             if score > best_score:
@@ -263,9 +352,9 @@ def select_entry_exit_rules_from_training(
                 best_stats = {
                     "score": float(score),
                     "train_trades": int(len(trades)),
-                    "train_roi": float(all_metrics.get("roi_on_stake", np.nan)),
-                    "train_trade_sharpe": float(all_metrics.get("trade_sharpe", np.nan)),
-                    "train_mdd_pct": float(all_metrics.get("max_drawdown_pct", np.nan)),
+                    "train_roi": float(stats["train_roi"]),
+                    "train_trade_sharpe": float(stats["train_trade_sharpe"]),
+                    "train_mdd_pct": float(stats["train_mdd_pct"]),
                     "train_loss_rate": loss_rate,
                 }
     return best_entry, best_exit, best_stats
@@ -281,6 +370,7 @@ def walk_forward_exit_backtest(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run a strict walk-forward backtest with learned entry and exit rules."""
     cfg = config or WalkForwardConfig()
+    prepared_prices = group_price_history(price_history)
     rows = attach_candidate_asset_ids(candidates).copy()
     rows["end_dt"] = pd.to_datetime(rows["end_dt"], utc=True, errors="coerce")
     rows = rows.dropna(subset=["condition_id", "end_dt", "market_price", "won", "snapshot_dt"]).sort_values(
@@ -310,7 +400,7 @@ def walk_forward_exit_backtest(
         calibrated_train = calibrate_candidates(train, train, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations)
         entry_rule, exit_policy, train_stats = select_entry_exit_rules_from_training(
             calibrated_train,
-            price_history,
+            prepared_prices,
             config=cfg,
             entry_rules=entry_rules,
             exit_policies=exit_policies,
@@ -333,7 +423,7 @@ def walk_forward_exit_backtest(
             continue
         calibrated_test = calibrate_candidates(train, test, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations)
         test_entries = calibrated_test[rule_mask(calibrated_test, entry_rule)].copy()
-        trades = simulate_exit_policy(test_entries, price_history, exit_policy, stake_usdc=cfg.stake_usdc)
+        trades = simulate_exit_policy(test_entries, prepared_prices, exit_policy, stake_usdc=cfg.stake_usdc)
         if not trades.empty:
             trades["fold"] = fold
             all_trades.append(trades)
@@ -357,14 +447,6 @@ def walk_forward_exit_backtest(
 
     trades_out = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
     return trades_out, pd.DataFrame(fold_rows), pd.DataFrame(rule_rows)
-
-
-def _to_metrics_frame(exit_trades: pd.DataFrame) -> pd.DataFrame:
-    rows = exit_trades.copy()
-    rows["bucket"] = "EXIT_AWARE"
-    rows["end_dt"] = rows["exit_dt"]
-    rows["won"] = rows["pnl_usdc"].gt(0)
-    return rows
 
 
 def losing_trades(trades: pd.DataFrame) -> pd.DataFrame:

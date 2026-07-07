@@ -3,8 +3,10 @@ from __future__ import annotations
 import pandas as pd
 
 from polymarket_crypto_5min.backtest import StrategyThresholds, simulate_strategy, summarize_trades
+from polymarket_crypto_5min.clients import ClobClient
 from polymarket_crypto_5min.downloader import infer_up_down_assets, is_bitcoin_5min_event
-from polymarket_crypto_5min.features import build_training_frame, taker_fee_per_share
+from polymarket_crypto_5min.features import asof_close, build_training_frame, taker_fee_per_share
+from polymarket_crypto_5min.exit_backtest import ExitPolicy, _training_score, group_price_history, simulate_exit_policy
 from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
 from polymarket_crypto_5min.resolution import resolved_direction_from_row
 from polymarket_crypto_5min.walk_forward import WalkForwardConfig, make_side_candidates, walk_forward_backtest
@@ -50,6 +52,36 @@ def test_fee_formula() -> None:
     assert round(taker_fee_per_share(0.30, fee_rate=0.07), 5) == 0.0147
 
 
+def test_bounded_clob_price_history_omits_relative_interval_filter() -> None:
+    class FakeHttp:
+        def __init__(self) -> None:
+            self.params = None
+
+        def get_json(self, url: str, params: dict | None = None) -> dict:
+            self.params = params
+            return {"history": [{"t": 1_700_000_000, "p": 0.5}]}
+
+    http = FakeHttp()
+    client = ClobClient(http=http)  # type: ignore[arg-type]
+    history = client.prices_history("asset", start_ts=1_700_000_000, end_ts=1_700_000_300)
+    assert history
+    assert http.params["startTs"] == 1_700_000_000
+    assert http.params["endTs"] == 1_700_000_300
+    assert "interval" not in http.params
+
+
+def test_asof_close_normalizes_timestamp_precision() -> None:
+    candles = pd.DataFrame(
+        {
+            "ts": pd.to_datetime([1_700_000_000, 1_700_000_060], unit="s", utc=True).astype("datetime64[us, UTC]"),
+            "close": [100.0, 101.0],
+        }
+    )
+    when = pd.Series(pd.to_datetime([1_700_000_030], unit="s", utc=True).astype("datetime64[s, UTC]"))
+    result = asof_close(candles, when)
+    assert result.iloc[0] == 100.0
+
+
 def test_equity_curve_counts_first_trade_loss_as_drawdown() -> None:
     trades = pd.DataFrame(
         {
@@ -64,8 +96,11 @@ def test_equity_curve_counts_first_trade_loss_as_drawdown() -> None:
     assert curve.iloc[0]["is_initial_row"] is True or bool(curve.iloc[0]["is_initial_row"])
     assert curve["drawdown_usdc"].min() == -10.0
     metrics = performance_metrics(trades, initial_capital=2000)
+    score = _training_score(trades.assign(exit_dt=trades["end_dt"]), initial_capital=2000)
     assert metrics.loc[0, "max_drawdown_usdc"] == -10.0
     assert round(metrics.loc[0, "max_drawdown_pct"], 4) == -0.005
+    assert round(score["train_mdd_pct"], 4) == -0.005
+    assert score["train_roi"] == metrics.loc[0, "roi_on_stake"]
     assert metrics.loc[0, "realized_equity_curve_only"] is True or bool(metrics.loc[0, "realized_equity_curve_only"])
 
 
@@ -222,3 +257,35 @@ def test_walk_forward_has_no_train_test_leakage() -> None:
     assert (pd.to_datetime(fold_report["train_end_dt"]) < pd.to_datetime(fold_report["test_start_dt"])).all()
     assert isinstance(trades, pd.DataFrame)
     assert isinstance(rules, pd.DataFrame)
+
+
+def test_exit_policy_uses_grouped_price_history_path() -> None:
+    entry = pd.DataFrame(
+        [
+            {
+                "condition_id": "m1",
+                "market_id": "1",
+                "question": "Bitcoin Up or Down",
+                "side": "UP",
+                "snapshot_dt": pd.Timestamp("2026-01-01T00:00:00Z"),
+                "end_dt": pd.Timestamp("2026-01-01T00:05:00Z"),
+                "market_price": 0.50,
+                "won": True,
+                "up_asset_id": "up",
+                "down_asset_id": "down",
+            }
+        ]
+    )
+    history = pd.DataFrame(
+        [
+            {"condition_id": "m1", "asset_id": "up", "ts": pd.Timestamp("2026-01-01T00:00:10Z"), "p": 0.54},
+            {"condition_id": "m1", "asset_id": "up", "ts": pd.Timestamp("2026-01-01T00:00:20Z"), "p": 0.57},
+            {"condition_id": "m1", "asset_id": "down", "ts": pd.Timestamp("2026-01-01T00:00:20Z"), "p": 0.43},
+        ]
+    )
+    grouped = group_price_history(history)
+    assert ("m1", "up") in grouped
+    trades = simulate_exit_policy(entry, history, ExitPolicy(take_profit=0.05, target_price=None, stop_loss=None), stake_usdc=10)
+    assert trades.loc[0, "exit_reason"] == "TAKE_PROFIT"
+    assert trades.loc[0, "path_points_seen"] == 2
+    assert trades.loc[0, "exit_price"] == 0.57

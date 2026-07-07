@@ -89,6 +89,29 @@ python scripts/backtest_thresholds.py --initial-capital 1000 --stake 10
 
 The report searches both buckets independently. Good candidate threshold rows should have enough trades, positive ROI, realistic average buy prices, and stable performance across nearby thresholds. Do not pick the single best row blindly; that is usually overfitting.
 
+## Exit-aware walk-forward research
+
+Exit-aware tests simulate entering from the calibrated walk-forward signal and leaving before settlement when the price path reaches a take-profit, target, stop-loss, or max-hold rule. This is research-only until a broader pre-registered grid is stable OOS and executable orderbook depth is validated.
+
+```bash
+python scripts/exit_aware_walk_forward.py \
+  --out-dir data/processed/exit_aware_walk_forward \
+  --grid-take-profit 0.03,0.05,0.08,0.10 \
+  --grid-target-price 0.80,0.90,none \
+  --grid-stop-loss 0.03,0.05,0.08 \
+  --grid-max-hold-seconds 10,20,30,none
+```
+
+For repeated grid experiments, reuse cached inputs instead of rebuilding features:
+
+```bash
+python scripts/exit_aware_walk_forward.py \
+  --side-candidates data/processed/full_btc_5m_walk_forward_recent3000/side_candidates.csv \
+  --out-dir data/processed/exit_aware_walk_forward_cached
+```
+
+Each run writes `exit_aware_run_manifest.json` with input paths, grids, fold count, trade count, leakage status, and runtime.
+
 ## Dry-run live signal
 
 ```bash
@@ -132,10 +155,12 @@ polymarket_crypto_5min/
   features.py      # point-in-time features and EV math
   backtest.py      # threshold grids and fixed-stake simulation
   metrics.py       # Sharpe, Sortino, max drawdown, equity curve
+  exit_backtest.py # exit-aware price-path simulation
   live_signal.py   # dry-run live scanner
 scripts/
   download_history.py
   backtest_thresholds.py
+  exit_aware_walk_forward.py
   live_signal.py
 tests/
   test_strategy.py

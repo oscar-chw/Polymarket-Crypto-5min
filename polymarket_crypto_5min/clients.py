@@ -131,16 +131,21 @@ class ClobClient:
         *,
         start_ts: int | None = None,
         end_ts: int | None = None,
-        interval: str = "1m",
+        interval: str | None = "1m",
         fidelity: int = 1,
     ) -> list[dict[str, Any]]:
         params = {
             "market": asset_id,
             "startTs": start_ts,
             "endTs": end_ts,
-            "interval": interval,
             "fidelity": fidelity,
         }
+        # The CLOB endpoint rejects some bounded start/end requests when a
+        # relative ``interval`` filter is also supplied. For historical
+        # point-in-time backtests, the bounded window is the source of truth;
+        # use ``interval`` only for unbounded relative lookbacks.
+        if interval is not None and start_ts is None and end_ts is None:
+            params["interval"] = interval
         payload = self.http.get_json(f"{self.base_url}/prices-history", params=params)
         if isinstance(payload, dict):
             return payload.get("history", [])

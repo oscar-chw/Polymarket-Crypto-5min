@@ -171,10 +171,24 @@ def _prep_candles(candles: pd.DataFrame) -> pd.DataFrame:
 
 
 def asof_close(candles: pd.DataFrame, when: pd.Series) -> pd.Series:
-    lookup = pd.DataFrame({"_row": np.arange(len(when)), "ts": pd.to_datetime(when, utc=True)})
+    lookup = pd.DataFrame({"_row": np.arange(len(when)), "ts": _datetime64ns_utc(pd.to_datetime(when, utc=True))})
     lookup = lookup.sort_values("ts")
-    merged = pd.merge_asof(lookup, candles[["ts", "close"]].sort_values("ts"), on="ts", direction="backward")
+    right = candles[["ts", "close"]].copy()
+    right["ts"] = _datetime64ns_utc(pd.to_datetime(right["ts"], utc=True, errors="coerce"))
+    merged = pd.merge_asof(lookup, right.sort_values("ts"), on="ts", direction="backward")
     return merged.sort_values("_row")["close"].reset_index(drop=True)
+
+
+def _datetime64ns_utc(values: pd.Series | pd.DatetimeIndex) -> pd.Series:
+    """Normalize timestamps for ``merge_asof`` across pandas/numpy backends."""
+    series = pd.Series(values)
+    if not pd.api.types.is_datetime64_any_dtype(series):
+        series = pd.to_datetime(series, utc=True, errors="coerce")
+    if series.dt.tz is None:
+        series = series.dt.tz_localize("UTC")
+    else:
+        series = series.dt.tz_convert("UTC")
+    return series.astype("datetime64[ns, UTC]")
 
 
 def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataFrame, *, asset_col: str) -> pd.Series:
@@ -185,7 +199,7 @@ def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataF
         return pd.Series(np.nan, index=markets.index)
     hist["condition_id"] = hist["condition_id"].astype(str)
     hist["asset_id"] = hist["asset_id"].astype(str)
-    hist["ts"] = pd.to_datetime(hist["ts"], utc=True, errors="coerce")
+    hist["ts"] = _datetime64ns_utc(pd.to_datetime(hist["ts"], utc=True, errors="coerce"))
     hist["p"] = pd.to_numeric(hist["p"], errors="coerce")
     hist = hist.dropna(subset=["condition_id", "asset_id", "ts", "p"])
     result = pd.Series(np.nan, index=markets.index, dtype="float64")
@@ -200,7 +214,7 @@ def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataF
             h_asset = h[h["asset_id"].eq(asset_id)].sort_values("ts")
             if h_asset.empty:
                 continue
-            lookup = pd.DataFrame({"_index": list(idx), "ts": markets.loc[idx, "snapshot_dt"]}).sort_values("ts")
+            lookup = pd.DataFrame({"_index": list(idx), "ts": _datetime64ns_utc(markets.loc[idx, "snapshot_dt"])}).sort_values("ts")
             merged = pd.merge_asof(lookup, h_asset[["ts", "p"]], on="ts", direction="backward")
             result.loc[merged["_index"].to_numpy()] = merged["p"].to_numpy()
     return result
