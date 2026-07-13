@@ -6,10 +6,25 @@ This repository does **not** promise profit and does **not** place live orders. 
 
 ## Strategy idea
 
-The strategy is split into two buckets:
+The strategy is split into two research buckets:
 
-1. **Confirmation bucket** — BTC has moved far enough above or below the market-start price near the end of the 5-minute window. The bot estimates whether the direction is already highly likely and only keeps trades with positive expected value after conservative taker fees.
-2. **Value-mismatch bucket** — Polymarket's buy price is still low, but the BTC move and short-term momentum imply a materially higher probability than the market price. This searches for “market says unlikely, external data says likely” situations.
+1. **Confirmation bucket** - BTC has moved far enough above or below the market-start price near the end of the five-minute window. The model retains a direction only when its prior-only calibrated lower bound clears the entry-price and score gates.
+2. **Value-mismatch bucket** - Polymarket's observed side price is below the prior-only calibrated probability by enough to clear the fee-adjusted edge gate.
+
+At decision time `d`, with market start `S` and one-minute Binance candles indexed by the first timestamp at which their final values are available:
+
+```text
+displacement_bps = 10,000 * (BTC_close_asof(d) / BTC_close_asof(S) - 1)
+momentum_1m_bps  = 10,000 * (BTC_close_asof(d) / BTC_close_asof(d - 60s) - 1)
+momentum_3m_bps  = 10,000 * (BTC_close_asof(d) / BTC_close_asof(d - 180s) - 1)
+time_scale       = sqrt(max(seconds_left, 1) / 60)
+z                = displacement_bps / max(8 * time_scale, 1)
+                   + 0.20 * momentum_1m_bps / 8
+                   + 0.08 * momentum_3m_bps / 8
+raw_p_up         = clip(sigmoid(z), 0.001, 0.999)
+```
+
+For each chronological test fold, probability calibration and rule selection use only earlier training rows. Price bins and score-magnitude bins are right-closed with the lowest interval included; empirical rates receive beta-binomial smoothing; sparse cells fall back to broader prior-only cells; and a one-sided normal-approximation lower bound is used by the entry gate. Test-fold outcomes never update that fold's calibration or selected rule.
 
 For a candidate buy at price `p`, the research model uses:
 
@@ -110,7 +125,7 @@ python scripts/exit_aware_walk_forward.py \
   --out-dir data/processed/exit_aware_walk_forward_cached
 ```
 
-Each run writes `exit_aware_run_manifest.json` with input paths, grids, fold count, trade count, leakage status, and runtime.
+Each run writes `exit_aware_run_manifest.json` with input hashes, source hashes, grids, fold count, trade count, feature-availability gates, leakage status, environment versions, and runtime. Legacy Binance files whose `ts` is the candle open are shifted exactly once to close availability; already availability-stamped files are never shifted again.
 
 ## Dry-run live signal
 

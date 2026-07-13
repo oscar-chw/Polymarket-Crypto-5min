@@ -245,7 +245,15 @@ class BinanceClient:
         end: datetime | int,
     ) -> pd.DataFrame:
         rows = list(self.iter_klines(symbol=symbol, interval=interval, start=start, end=end))
-        return klines_to_frame(rows, symbol=symbol, interval=interval)
+        frame = klines_to_frame(rows, symbol=symbol, interval=interval)
+        if frame.empty:
+            return frame
+        # Binance may include the currently forming kline even when ``end`` is
+        # earlier than that kline's close.  A final close is not observable
+        # until the interval has finished, so exclude rows whose availability
+        # timestamp is after the point-in-time request boundary.
+        end_at = pd.to_datetime(_to_ms(end), unit="ms", utc=True)
+        return frame.loc[frame["ts"].le(end_at)].reset_index(drop=True)
 
 
 def klines_to_frame(rows: list[list[Any]], *, symbol: str, interval: str) -> pd.DataFrame:
@@ -265,14 +273,52 @@ def klines_to_frame(rows: list[list[Any]], *, symbol: str, interval: str) -> pd.
     ]
     frame = pd.DataFrame(rows, columns=columns[: len(rows[0])] if rows else columns)
     if frame.empty:
-        return pd.DataFrame(columns=["ts", "symbol", "interval", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(
+            columns=[
+                "ts",
+                "open_ts",
+                "close_ts",
+                "available_at",
+                "timestamp_semantics",
+                "symbol",
+                "interval",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ]
+        )
     for col in ["open", "high", "low", "close", "volume", "quote_volume"]:
         if col in frame:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    frame["ts"] = pd.to_datetime(frame["open_time_ms"], unit="ms", utc=True)
+    frame["open_ts"] = pd.to_datetime(frame["open_time_ms"], unit="ms", utc=True)
+    frame["close_ts"] = pd.to_datetime(frame["close_time_ms"], unit="ms", utc=True)
+    # Binance's close_time_ms is the final millisecond of the interval.  Use
+    # the next millisecond as a conservative, integer-boundary availability
+    # timestamp.  Historical as-of joins must never index a candle by its open
+    # time while consuming its final close/high/low/volume.
+    frame["available_at"] = frame["close_ts"] + pd.to_timedelta(1, unit="ms")
+    frame["ts"] = frame["available_at"]
+    frame["timestamp_semantics"] = "close_available_at"
     frame["symbol"] = symbol
     frame["interval"] = interval
-    keep = ["ts", "symbol", "interval", "open", "high", "low", "close", "volume", "quote_volume", "num_trades"]
+    keep = [
+        "ts",
+        "open_ts",
+        "close_ts",
+        "available_at",
+        "timestamp_semantics",
+        "symbol",
+        "interval",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+        "num_trades",
+    ]
     return frame[[col for col in keep if col in frame]].sort_values("ts").reset_index(drop=True)
 
 
