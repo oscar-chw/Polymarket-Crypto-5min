@@ -9,7 +9,11 @@ post-entry price path allows it.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
+import platform
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -21,6 +25,47 @@ from polymarket_crypto_5min.exit_backtest import losing_trades, walk_forward_exi
 from polymarket_crypto_5min.features import build_training_frame, load_candles, load_markets, load_poly_prices
 from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
 from polymarket_crypto_5min.walk_forward import DEFAULT_RULE_GRID, WalkForwardConfig, generate_rule_grid, make_side_candidates
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _file_record(path_value: str | Path, *, repo_relative: bool = False) -> dict[str, object]:
+    path = Path(path_value).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    display = path.relative_to(REPO).as_posix() if repo_relative and path.is_relative_to(REPO) else str(path_value).replace("\\", "/")
+    return {
+        "path": display,
+        "provenance_runtime_absolute_path": str(path),
+        "bytes": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (pd.Timestamp,)):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        try:
+            return _json_safe(value.item())
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -178,29 +223,69 @@ def main() -> None:
         "edge_lower",
         "score_bps",
         "abs_score_bps",
+        "feature_available_at",
+        "feature_availability_passed",
+        "btc_start_available_at",
+        "btc_snapshot_available_at",
+        "btc_1m_ago_available_at",
+        "btc_3m_ago_available_at",
     ]
     if not trades.empty:
         trades[[col for col in detail_cols if col in trades.columns]].to_csv(out_dir / "exit_aware_trade_audit.csv", index=False)
 
+    output_paths = {
+        "feature_frame": out_dir / "feature_frame.csv",
+        "side_candidates": out_dir / "side_candidates.csv",
+        "trades": out_dir / "exit_aware_trades.csv",
+        "losing_trades": out_dir / "exit_aware_losing_trades.csv",
+        "metrics": out_dir / "exit_aware_metrics.csv",
+        "equity_curve": out_dir / "exit_aware_equity_curve.csv",
+        "folds": out_dir / "exit_aware_folds.csv",
+        "selected_rules": out_dir / "exit_aware_selected_rules.csv",
+    }
+    trade_audit_path = out_dir / "exit_aware_trade_audit.csv"
+    if trade_audit_path.is_file():
+        output_paths["trade_audit"] = trade_audit_path
+    source_paths = [
+        Path(__file__),
+        REPO / "polymarket_crypto_5min" / "clients.py",
+        REPO / "polymarket_crypto_5min" / "features.py",
+        REPO / "polymarket_crypto_5min" / "walk_forward.py",
+        REPO / "polymarket_crypto_5min" / "exit_backtest.py",
+        REPO / "polymarket_crypto_5min" / "metrics.py",
+    ]
+    feature_availability_present = {
+        "feature_available_at",
+        "feature_availability_passed",
+    }.issubset(frame.columns)
+    feature_availability_passed = bool(
+        feature_availability_present
+        and not frame.empty
+        and frame["feature_availability_passed"].fillna(False).all()
+    )
     manifest = {
+        "schema_version": "exit_aware_walk_forward_v2_point_in_time_availability",
         "script": "scripts/exit_aware_walk_forward.py",
         "runtime_seconds": time.perf_counter() - started,
         "inputs": {
-            "markets": args.markets,
-            "btc_candles": args.btc_candles,
-            "poly_prices": args.poly_prices,
-            "feature_frame": args.feature_frame,
-            "side_candidates": args.side_candidates,
+            "markets": _file_record(args.markets),
+            "btc_candles": _file_record(args.btc_candles),
+            "poly_prices": _file_record(args.poly_prices),
+            "feature_frame": _file_record(args.feature_frame) if args.feature_frame else None,
+            "side_candidates": _file_record(args.side_candidates) if args.side_candidates else None,
             "snapshot_seconds_before_close": args.snapshot_seconds_before_close,
         },
-        "outputs": {
-            "out_dir": str(out_dir),
-            "feature_frame": str(out_dir / "feature_frame.csv"),
-            "side_candidates": str(out_dir / "side_candidates.csv"),
-            "trades": str(out_dir / "exit_aware_trades.csv"),
-            "metrics": str(out_dir / "exit_aware_metrics.csv"),
-            "folds": str(out_dir / "exit_aware_folds.csv"),
-            "selected_rules": str(out_dir / "exit_aware_selected_rules.csv"),
+        "outputs": {name: _file_record(path) for name, path in output_paths.items()},
+        "source_files": {
+            path.relative_to(REPO).as_posix(): _file_record(path, repo_relative=True)
+            for path in source_paths
+        },
+        "environment": {
+            "python": platform.python_version(),
+            "python_implementation": platform.python_implementation(),
+            "numpy": __import__("numpy").__version__,
+            "pandas": pd.__version__,
+            "executable_provenance_absolute_path": sys.executable,
         },
         "walk_forward_config": asdict(config),
         "entry_rule_grid": rule_grid,
@@ -209,12 +294,33 @@ def main() -> None:
         "exit_policy_count": len(exit_policies),
         "candidate_rows": int(len(candidates)),
         "feature_rows": int(len(frame)) if not frame.empty else None,
+        "feature_timestamp_semantics": "Binance final OHLCV indexed at close availability",
+        "feature_availability_columns_present": feature_availability_present,
+        "feature_availability_passed": feature_availability_passed,
+        "feature_availability_failed_rows": (
+            int((~frame["feature_availability_passed"].fillna(False)).sum())
+            if feature_availability_present
+            else None
+        ),
+        "feature_available_at_max_utc": (
+            pd.to_datetime(frame["feature_available_at"], utc=True, errors="coerce").max()
+            if feature_availability_present
+            else None
+        ),
         "fold_rows": int(len(folds)),
         "trade_rows": int(len(trades)),
-        "leakage_passed": bool(folds.empty or folds["leakage_check_passed"].all()),
-        "research_status": "pre-deployment research; rerun with pre-registered grid before any live claim",
+        "chronological_fold_leakage_passed": bool(folds.empty or folds["leakage_check_passed"].all()),
+        "leakage_passed": bool(
+            feature_availability_passed
+            and (folds.empty or folds["leakage_check_passed"].all())
+        ),
+        "policy_matrix_status": "unavailable_full_configured_policy_by_time_return_matrix",
+        "research_status": "research_only_not_deployable",
     }
-    (out_dir / args.run_manifest).write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    (out_dir / args.run_manifest).write_text(
+        json.dumps(_json_safe(manifest), indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
 
     print(f"Wrote exit-aware outputs to {out_dir}")
     if not metrics.empty:

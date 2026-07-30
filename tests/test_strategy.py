@@ -3,12 +3,13 @@ from __future__ import annotations
 import pandas as pd
 
 from polymarket_crypto_5min.backtest import StrategyThresholds, simulate_strategy, summarize_trades
-from polymarket_crypto_5min.clients import ClobClient
+from polymarket_crypto_5min.clients import ClobClient, klines_to_frame
 from polymarket_crypto_5min.downloader import infer_up_down_assets, is_bitcoin_5min_event
-from polymarket_crypto_5min.features import asof_close, build_training_frame, taker_fee_per_share
+from polymarket_crypto_5min.features import asof_close, build_training_frame, load_candles, taker_fee_per_share
 from polymarket_crypto_5min.exit_backtest import ExitPolicy, _training_score, group_price_history, simulate_exit_policy
 from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
 from polymarket_crypto_5min.resolution import resolved_direction_from_row
+from polymarket_crypto_5min.signal_diagnostics import chronological_fold_ic, json_safe
 from polymarket_crypto_5min.walk_forward import WalkForwardConfig, make_side_candidates, walk_forward_backtest
 
 
@@ -80,6 +81,177 @@ def test_asof_close_normalizes_timestamp_precision() -> None:
     when = pd.Series(pd.to_datetime([1_700_000_030], unit="s", utc=True).astype("datetime64[s, UTC]"))
     result = asof_close(candles, when)
     assert result.iloc[0] == 100.0
+
+
+def test_binance_final_close_is_timestamped_when_available() -> None:
+    frame = klines_to_frame(
+        [
+            [
+                1_700_000_000_000,
+                "100",
+                "102",
+                "99",
+                "101",
+                "12",
+                1_700_000_059_999,
+                "1200",
+                10,
+                "6",
+                "600",
+                "0",
+            ]
+        ],
+        symbol="BTCUSDT",
+        interval="1m",
+    )
+    assert frame.loc[0, "open_ts"] == pd.Timestamp(1_700_000_000, unit="s", tz="UTC")
+    assert frame.loc[0, "ts"] == pd.Timestamp(1_700_000_060, unit="s", tz="UTC")
+    assert frame.loc[0, "available_at"] == frame.loc[0, "ts"]
+    assert frame.loc[0, "timestamp_semantics"] == "close_available_at"
+
+
+def test_load_candles_migrates_legacy_binance_open_timestamps(tmp_path) -> None:
+    path = tmp_path / "btc.csv"
+    pd.DataFrame(
+        {
+            "ts": ["2026-07-05T12:00:00Z"],
+            "symbol": ["BTCUSDT"],
+            "interval": ["1m"],
+            "open": [100],
+            "high": [102],
+            "low": [99],
+            "close": [101],
+            "volume": [12],
+        }
+    ).to_csv(path, index=False)
+    frame = load_candles(path)
+    assert frame.loc[0, "open_ts"] == pd.Timestamp("2026-07-05T12:00:00Z")
+    assert frame.loc[0, "ts"] == pd.Timestamp("2026-07-05T12:01:00Z")
+    assert frame.loc[0, "timestamp_semantics"] == "legacy_binance_open_time_shifted_to_close_available_at"
+
+
+def test_legacy_and_explicit_close_availability_candles_are_equivalent(tmp_path) -> None:
+    legacy_path = tmp_path / "legacy.csv"
+    explicit_path = tmp_path / "explicit.csv"
+    values = {
+        "symbol": ["BTCUSDT", "BTCUSDT"],
+        "interval": ["1m", "1m"],
+        "open": [100.0, 101.0],
+        "high": [102.0, 103.0],
+        "low": [99.0, 100.0],
+        "close": [101.0, 102.0],
+        "volume": [12.0, 14.0],
+    }
+    open_times = pd.to_datetime(
+        ["2026-07-05T12:00:00Z", "2026-07-05T12:01:00Z"], utc=True
+    )
+    pd.DataFrame({"ts": open_times, **values}).to_csv(legacy_path, index=False)
+    pd.DataFrame(
+        {
+            "ts": open_times + pd.Timedelta(minutes=1),
+            "open_ts": open_times,
+            "close_ts": open_times + pd.Timedelta(minutes=1) - pd.Timedelta(milliseconds=1),
+            "available_at": open_times + pd.Timedelta(minutes=1),
+            "timestamp_semantics": ["close_available_at", "close_available_at"],
+            **values,
+        }
+    ).to_csv(explicit_path, index=False)
+
+    legacy = load_candles(legacy_path)
+    explicit = load_candles(explicit_path)
+    columns = ["ts", "open_ts", "close_ts", "available_at", "open", "high", "low", "close", "volume"]
+    pd.testing.assert_frame_equal(
+        legacy[columns].reset_index(drop=True),
+        explicit[columns].reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+def test_training_frame_excludes_unfinished_candle_close() -> None:
+    markets = pd.DataFrame(
+        [
+            {
+                "condition_id": "0x" + "4" * 64,
+                "market_id": "4",
+                "question": "Bitcoin Up or Down - availability test",
+                "start_ts": 1_700_000_000,
+                "end_ts": 1_700_000_300,
+                "up_asset_id": "up4",
+                "down_asset_id": "down4",
+                "outcomes": ["Up", "Down"],
+                "outcome_prices": [1, 0],
+            }
+        ]
+    )
+    # Values are indexed by their availability timestamps.  At snapshot
+    # 00:04:15 the 00:04-00:05 candle is still unfinished, so 104 is the
+    # newest legal close and 999 must not enter any feature.
+    candles = pd.DataFrame(
+        {
+            "ts": pd.to_datetime(
+                [
+                    1_700_000_000,
+                    1_700_000_060,
+                    1_700_000_120,
+                    1_700_000_180,
+                    1_700_000_240,
+                    1_700_000_300,
+                ],
+                unit="s",
+                utc=True,
+            ),
+            "close": [100, 101, 102, 103, 104, 999],
+        }
+    )
+    poly_prices = pd.DataFrame(
+        {
+            "condition_id": ["0x" + "4" * 64],
+            "asset_id": ["up4"],
+            "ts": pd.to_datetime([1_700_000_240], unit="s", utc=True),
+            "p": [0.65],
+        }
+    )
+    frame = build_training_frame(markets, candles, poly_prices, snapshot_seconds_before_close=45)
+    assert frame.loc[0, "btc_snapshot"] == 104
+    assert frame.loc[0, "btc_snapshot_available_at"] == pd.Timestamp(1_700_000_240, unit="s", tz="UTC")
+    assert frame.loc[0, "feature_availability_passed"]
+
+
+def test_signal_ic_uses_only_complete_chronological_folds() -> None:
+    detail = pd.DataFrame(
+        {
+            "condition_id": [f"m{i}" for i in range(7)],
+            "end_dt": pd.date_range("2026-07-01", periods=7, freq="5min", tz="UTC"),
+            "horizon_seconds": [45] * 7,
+            "model_prob_up": [0.1, 0.9, 0.2, 0.8, 0.3, 0.7, 0.99],
+            "direction_up": [0, 1, 0, 1, 0, 1, 0],
+        }
+    )
+    folds = chronological_fold_ic(detail, fold_market_count=3)
+    assert len(folds) == 2
+    assert folds["n_markets"].eq(3).all()
+    assert folds["pearson_ic_prob_vs_direction"].gt(0).all()
+
+
+def test_signal_rank_ic_handles_ties_without_scipy() -> None:
+    detail = pd.DataFrame(
+        {
+            "condition_id": [f"m{i}" for i in range(6)],
+            "end_dt": pd.date_range("2026-07-01", periods=6, freq="5min", tz="UTC"),
+            "horizon_seconds": [45] * 6,
+            "model_prob_up": [0.2, 0.2, 0.4, 0.6, 0.8, 0.8],
+            "direction_up": [0, 0, 0, 1, 1, 1],
+        }
+    )
+    folds = chronological_fold_ic(detail, fold_market_count=6)
+    expected = detail["model_prob_up"].rank(method="average").corr(
+        detail["direction_up"].rank(method="average")
+    )
+    assert folds.loc[0, "rank_ic_prob_vs_direction"] == expected
+
+
+def test_signal_diagnostic_json_is_strict() -> None:
+    assert json_safe({"missing": float("nan"), "finite": 1.5}) == {"missing": None, "finite": 1.5}
 
 
 def test_equity_curve_counts_first_trade_loss_as_drawdown() -> None:

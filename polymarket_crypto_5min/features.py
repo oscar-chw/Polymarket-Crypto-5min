@@ -47,10 +47,60 @@ def load_candles(path: str | Path) -> pd.DataFrame:
     if "ts" not in frame.columns:
         raise ValueError("candle CSV must have a ts column")
     frame["ts"] = pd.to_datetime(frame["ts"], utc=True, errors="coerce")
+    semantics = frame.get("timestamp_semantics")
+    if semantics is None:
+        # Files emitted by package versions before the availability fix used
+        # Binance open time as ``ts`` while storing the interval's final close.
+        # Detect only that exact legacy Binance schema and migrate it
+        # conservatively.  Unidentified timestamp semantics fail closed.
+        required_legacy = {"symbol", "interval", "open", "high", "low", "close", "volume"}
+        if not required_legacy.issubset(frame.columns):
+            raise ValueError(
+                "candle timestamp semantics unavailable; provide close-availability "
+                "timestamps or the legacy Binance symbol/interval schema"
+            )
+        intervals = frame["interval"].dropna().astype(str).unique().tolist()
+        if len(intervals) != 1:
+            raise ValueError("legacy candle file must contain exactly one interval")
+        delta = _candle_interval_delta(intervals[0])
+        frame["open_ts"] = frame["ts"]
+        frame["close_ts"] = frame["open_ts"] + delta - pd.to_timedelta(1, unit="ms")
+        frame["available_at"] = frame["open_ts"] + delta
+        frame["ts"] = frame["available_at"]
+        frame["timestamp_semantics"] = "legacy_binance_open_time_shifted_to_close_available_at"
+    else:
+        allowed = {
+            "close_available_at",
+            "legacy_binance_open_time_shifted_to_close_available_at",
+        }
+        observed = set(semantics.dropna().astype(str).unique())
+        if not observed or not observed.issubset(allowed):
+            raise ValueError(f"unsupported candle timestamp semantics: {sorted(observed)}")
+        if "available_at" in frame.columns:
+            frame["available_at"] = pd.to_datetime(frame["available_at"], utc=True, errors="coerce")
+            if not frame["available_at"].equals(frame["ts"]):
+                raise ValueError("candle ts must equal available_at")
+        else:
+            frame["available_at"] = frame["ts"]
+        for col in ("open_ts", "close_ts"):
+            if col in frame.columns:
+                frame[col] = pd.to_datetime(frame[col], utc=True, errors="coerce")
     for col in ["open", "high", "low", "close", "volume"]:
         if col in frame.columns:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
     return frame.dropna(subset=["ts", "close"]).sort_values("ts").reset_index(drop=True)
+
+
+def _candle_interval_delta(interval: str) -> pd.Timedelta:
+    token = str(interval).strip().lower()
+    if len(token) < 2 or not token[:-1].isdigit():
+        raise ValueError(f"unsupported candle interval: {interval}")
+    amount = int(token[:-1])
+    units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+    unit = units.get(token[-1])
+    if unit is None or amount <= 0:
+        raise ValueError(f"unsupported candle interval: {interval}")
+    return pd.to_timedelta(amount, unit=unit)
 
 
 def load_poly_prices(path: str | Path | None) -> pd.DataFrame | None:
@@ -106,11 +156,35 @@ def build_training_frame(
     rows["snapshot_dt"] = pd.to_datetime(rows["snapshot_ts"], unit="s", utc=True)
     rows["seconds_left"] = rows["end_ts"] - rows["snapshot_ts"]
 
-    rows["btc_start"] = asof_close(candles, rows["start_dt"])
-    rows["btc_snapshot"] = asof_close(candles, rows["snapshot_dt"])
-    rows["btc_end"] = asof_close(candles, rows["end_dt"])
-    rows["btc_1m_ago"] = asof_close(candles, rows["snapshot_dt"] - pd.to_timedelta(60, unit="s"))
-    rows["btc_3m_ago"] = asof_close(candles, rows["snapshot_dt"] - pd.to_timedelta(180, unit="s"))
+    lookups = {
+        "start": rows["start_dt"],
+        "snapshot": rows["snapshot_dt"],
+        "end": rows["end_dt"],
+        "1m_ago": rows["snapshot_dt"] - pd.to_timedelta(60, unit="s"),
+        "3m_ago": rows["snapshot_dt"] - pd.to_timedelta(180, unit="s"),
+    }
+    for name, when in lookups.items():
+        observed = asof_candle(candles, when)
+        rows[f"btc_{name}"] = observed["close"]
+        rows[f"btc_{name}_available_at"] = observed["available_at"]
+        rows[f"btc_{name}_age_seconds"] = (
+            pd.to_datetime(when, utc=True).reset_index(drop=True)
+            - pd.to_datetime(observed["available_at"], utc=True)
+        ).dt.total_seconds()
+
+    feature_availability = rows[
+        [
+            "btc_start_available_at",
+            "btc_snapshot_available_at",
+            "btc_1m_ago_available_at",
+            "btc_3m_ago_available_at",
+        ]
+    ].max(axis=1)
+    rows["feature_available_at"] = feature_availability
+    rows["feature_availability_passed"] = feature_availability.le(rows["snapshot_dt"])
+    invalid = rows["feature_available_at"].notna() & ~rows["feature_availability_passed"]
+    if invalid.any():
+        raise ValueError("BTC feature row uses a candle unavailable at the decision timestamp")
 
     rows["score_bps"] = (rows["btc_snapshot"] / rows["btc_start"] - 1.0) * 10_000
     rows["abs_score_bps"] = rows["score_bps"].abs()
@@ -171,12 +245,25 @@ def _prep_candles(candles: pd.DataFrame) -> pd.DataFrame:
 
 
 def asof_close(candles: pd.DataFrame, when: pd.Series) -> pd.Series:
+    return asof_candle(candles, when)["close"]
+
+
+def asof_candle(candles: pd.DataFrame, when: pd.Series) -> pd.DataFrame:
     lookup = pd.DataFrame({"_row": np.arange(len(when)), "ts": _datetime64ns_utc(pd.to_datetime(when, utc=True))})
     lookup = lookup.sort_values("ts")
-    right = candles[["ts", "close"]].copy()
-    right["ts"] = _datetime64ns_utc(pd.to_datetime(right["ts"], utc=True, errors="coerce"))
-    merged = pd.merge_asof(lookup, right.sort_values("ts"), on="ts", direction="backward")
-    return merged.sort_values("_row")["close"].reset_index(drop=True)
+    right = candles[["ts", "close"]].rename(columns={"ts": "available_at"}).copy()
+    right["available_at"] = _datetime64ns_utc(
+        pd.to_datetime(right["available_at"], utc=True, errors="coerce")
+    )
+    merged = pd.merge_asof(
+        lookup,
+        right.sort_values("available_at"),
+        left_on="ts",
+        right_on="available_at",
+        direction="backward",
+    )
+    merged = merged.sort_values("_row").reset_index(drop=True)
+    return pd.DataFrame({"close": merged["close"], "available_at": merged["available_at"]})
 
 
 def _datetime64ns_utc(values: pd.Series | pd.DatetimeIndex) -> pd.Series:
