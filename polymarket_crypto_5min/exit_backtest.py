@@ -12,9 +12,9 @@ flags so bad trades can be audited individually.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from itertools import product
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -48,7 +48,9 @@ DEFAULT_EXIT_POLICY_GRID = {
 }
 
 
-def generate_exit_policy_grid(policy_grid: dict[str, Iterable[float | int | None]] | None = None) -> list[ExitPolicy]:
+def generate_exit_policy_grid(
+    policy_grid: Mapping[str, Iterable[float | int | None]] | None = None,
+) -> list[ExitPolicy]:
     grid = policy_grid or DEFAULT_EXIT_POLICY_GRID
     policies: list[ExitPolicy] = []
     for take_profit, target_price, stop_loss, max_hold in product(
@@ -85,9 +87,11 @@ def prepare_price_history(price_history: pd.DataFrame) -> pd.DataFrame:
     hist["condition_id"] = hist["condition_id"].astype(str)
     hist["asset_id"] = hist["asset_id"].astype(str)
     hist["p"] = pd.to_numeric(hist["p"], errors="coerce")
-    out = hist.dropna(subset=["condition_id", "asset_id", "ts", "p"]).sort_values(
-        ["condition_id", "asset_id", "ts"]
-    ).reset_index(drop=True)
+    out = (
+        hist.dropna(subset=["condition_id", "asset_id", "ts", "p"])
+        .sort_values(["condition_id", "asset_id", "ts"])
+        .reset_index(drop=True)
+    )
     out.attrs["exit_backtest_prepared"] = True
     return out
 
@@ -273,7 +277,9 @@ def _training_score(trades: pd.DataFrame, *, initial_capital: float) -> dict[str
     returns = pd.to_numeric(trades.get("return_on_stake", pnl / stake), errors="coerce").dropna()
     std = float(returns.std(ddof=1)) if len(returns) > 1 else math.nan
     sharpe = float(returns.mean() / std) if len(returns) > 1 and std and math.isfinite(std) else math.nan
-    total_stake = float(pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum())
+    total_stake = float(
+        pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()
+    )
     total_pnl = float(pnl.sum())
 
     ordered = trades.copy()
@@ -309,7 +315,7 @@ def select_entry_exit_rules_from_training(
     rows = calibrated_train.reset_index(drop=True).copy()
     rows["_candidate_row_id"] = np.arange(len(rows), dtype=np.int64)
     rule_entries: list[tuple[WalkForwardRule, np.ndarray]] = []
-    union_mask = np.zeros(len(rows), dtype=bool)
+    union_mask: np.ndarray = np.zeros(len(rows), dtype=bool)
     for entry_rule in rules:
         mask = rule_mask(rows, entry_rule).to_numpy(dtype=bool)
         if int(mask.sum()) < config.min_train_trades:
@@ -397,7 +403,9 @@ def walk_forward_exit_backtest(
         train_end = train["end_dt"].max()
         test_start = test["end_dt"].min()
         leakage_ok = bool(train_end < test_start)
-        calibrated_train = calibrate_candidates(train, train, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations)
+        calibrated_train = calibrate_candidates(
+            train, train, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations
+        )
         entry_rule, exit_policy, train_stats = select_entry_exit_rules_from_training(
             calibrated_train,
             prepared_prices,
@@ -421,7 +429,9 @@ def walk_forward_exit_backtest(
             )
             start = end
             continue
-        calibrated_test = calibrate_candidates(train, test, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations)
+        calibrated_test = calibrate_candidates(
+            train, test, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations
+        )
         test_entries = calibrated_test[rule_mask(calibrated_test, entry_rule)].copy()
         trades = simulate_exit_policy(test_entries, prepared_prices, exit_policy, stake_usdc=cfg.stake_usdc)
         if not trades.empty:

@@ -28,7 +28,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-markets", type=int, default=100)
     parser.add_argument("--min-train-trades", type=int, default=25)
     parser.add_argument("--min-bin-observations", type=int, default=30)
-    parser.add_argument("--allow-gamma-prices", action="store_true", help="Exploratory only: may use post-resolution prices")
+    parser.add_argument(
+        "--allow-gamma-prices", action="store_true", help="Exploratory only: may use post-resolution prices"
+    )
     parser.add_argument(
         "--allow-external-btc-outcome-fallback",
         action="store_true",

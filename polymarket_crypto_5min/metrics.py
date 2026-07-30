@@ -113,7 +113,9 @@ def performance_metrics(
     if "bucket" in trades.columns:
         groups.extend((str(bucket), group) for bucket, group in trades.groupby("bucket", dropna=False))
     for label, group in groups:
-        rows.append(_metrics_for_group(label, group, initial_capital=initial_capital, periods_per_year=periods_per_year))
+        rows.append(
+            _metrics_for_group(label, group, initial_capital=initial_capital, periods_per_year=periods_per_year)
+        )
     return pd.DataFrame(rows)
 
 
@@ -132,7 +134,9 @@ def _metrics_for_group(
     daily_returns = _daily_equity_returns(curve, initial_capital=initial_capital)
     gross_profit = float(pnl[pnl > 0].sum())
     gross_loss = float(-pnl[pnl < 0].sum())
-    total_stake = float(pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum())
+    total_stake = float(
+        pd.to_numeric(trades.get("stake_usdc", pd.Series(dtype=float)), errors="coerce").fillna(0.0).sum()
+    )
     total_pnl = float(pnl.sum())
     max_dd_usdc = float(curve["drawdown_usdc"].min()) if not curve.empty else math.nan
     max_dd_pct = float(curve["drawdown_pct"].min()) if not curve.empty else math.nan
@@ -157,8 +161,12 @@ def _metrics_for_group(
         "profit_factor": gross_profit / gross_loss if gross_loss else math.inf,
         "gross_profit_usdc": gross_profit,
         "gross_loss_usdc": gross_loss,
-        "avg_market_price": _safe_mean(pd.to_numeric(trades.get("market_price", pd.Series(dtype=float)), errors="coerce")),
-        "avg_ev_per_share": _safe_mean(pd.to_numeric(trades.get("expected_value_per_share", pd.Series(dtype=float)), errors="coerce")),
+        "avg_market_price": _safe_mean(
+            pd.to_numeric(trades.get("market_price", pd.Series(dtype=float)), errors="coerce")
+        ),
+        "avg_ev_per_share": _safe_mean(
+            pd.to_numeric(trades.get("expected_value_per_share", pd.Series(dtype=float)), errors="coerce")
+        ),
         "realized_equity_curve_only": True,
         "mark_to_market_drawdown_available": False,
         "min_realized_equity": float(curve_no_initial["equity"].min()) if not curve_no_initial.empty else math.nan,

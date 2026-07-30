@@ -34,7 +34,9 @@ def test_exit_policy_takes_profit_and_logs_trade_details() -> None:
             "p": [0.68, 0.76],
         }
     )
-    trades = simulate_exit_policy(entries, prices, ExitPolicy(take_profit=0.08, target_price=None, stop_loss=None), stake_usdc=10)
+    trades = simulate_exit_policy(
+        entries, prices, ExitPolicy(take_profit=0.08, target_price=None, stop_loss=None), stake_usdc=10
+    )
     assert len(trades) == 1
     assert trades.loc[0, "exit_reason"] == "TAKE_PROFIT"
     assert trades.loc[0, "exit_price"] == 0.76
@@ -72,7 +74,9 @@ def test_exit_policy_stop_loss_and_losing_trade_audit() -> None:
             "p": [0.63],
         }
     )
-    trades = simulate_exit_policy(entries, prices, ExitPolicy(take_profit=None, target_price=None, stop_loss=0.05), stake_usdc=10)
+    trades = simulate_exit_policy(
+        entries, prices, ExitPolicy(take_profit=None, target_price=None, stop_loss=0.05), stake_usdc=10
+    )
     assert trades.loc[0, "exit_reason"] == "STOP_LOSS"
     assert trades.loc[0, "loss_trade"] is True or bool(trades.loc[0, "loss_trade"])
     losses = losing_trades(trades)

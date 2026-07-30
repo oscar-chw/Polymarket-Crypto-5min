@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 
 from polymarket_crypto_5min.backtest import StrategyThresholds, simulate_strategy, summarize_trades
 from polymarket_crypto_5min.clients import ClobClient, klines_to_frame
 from polymarket_crypto_5min.downloader import infer_up_down_assets, is_bitcoin_5min_event
-from polymarket_crypto_5min.features import asof_close, build_training_frame, load_candles, taker_fee_per_share
 from polymarket_crypto_5min.exit_backtest import ExitPolicy, _training_score, group_price_history, simulate_exit_policy
+from polymarket_crypto_5min.features import asof_close, build_training_frame, load_candles, taker_fee_per_share
 from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
 from polymarket_crypto_5min.resolution import resolved_direction_from_row
 from polymarket_crypto_5min.signal_diagnostics import chronological_fold_ic, json_safe
@@ -56,9 +58,9 @@ def test_fee_formula() -> None:
 def test_bounded_clob_price_history_omits_relative_interval_filter() -> None:
     class FakeHttp:
         def __init__(self) -> None:
-            self.params = None
+            self.params: dict[str, Any] | None = None
 
-        def get_json(self, url: str, params: dict | None = None) -> dict:
+        def get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
             self.params = params
             return {"history": [{"t": 1_700_000_000, "p": 0.5}]}
 
@@ -66,6 +68,7 @@ def test_bounded_clob_price_history_omits_relative_interval_filter() -> None:
     client = ClobClient(http=http)  # type: ignore[arg-type]
     history = client.prices_history("asset", start_ts=1_700_000_000, end_ts=1_700_000_300)
     assert history
+    assert http.params is not None
     assert http.params["startTs"] == 1_700_000_000
     assert http.params["endTs"] == 1_700_000_300
     assert "interval" not in http.params
@@ -142,9 +145,7 @@ def test_legacy_and_explicit_close_availability_candles_are_equivalent(tmp_path)
         "close": [101.0, 102.0],
         "volume": [12.0, 14.0],
     }
-    open_times = pd.to_datetime(
-        ["2026-07-05T12:00:00Z", "2026-07-05T12:01:00Z"], utc=True
-    )
+    open_times = pd.to_datetime(["2026-07-05T12:00:00Z", "2026-07-05T12:01:00Z"], utc=True)
     pd.DataFrame({"ts": open_times, **values}).to_csv(legacy_path, index=False)
     pd.DataFrame(
         {
@@ -244,9 +245,7 @@ def test_signal_rank_ic_handles_ties_without_scipy() -> None:
         }
     )
     folds = chronological_fold_ic(detail, fold_market_count=6)
-    expected = detail["model_prob_up"].rank(method="average").corr(
-        detail["direction_up"].rank(method="average")
-    )
+    expected = detail["model_prob_up"].rank(method="average").corr(detail["direction_up"].rank(method="average"))
     assert folds.loc[0, "rank_ic_prob_vs_direction"] == expected
 
 
@@ -457,7 +456,9 @@ def test_exit_policy_uses_grouped_price_history_path() -> None:
     )
     grouped = group_price_history(history)
     assert ("m1", "up") in grouped
-    trades = simulate_exit_policy(entry, history, ExitPolicy(take_profit=0.05, target_price=None, stop_loss=None), stake_usdc=10)
+    trades = simulate_exit_policy(
+        entry, history, ExitPolicy(take_profit=0.05, target_price=None, stop_loss=None), stake_usdc=10
+    )
     assert trades.loc[0, "exit_reason"] == "TAKE_PROFIT"
     assert trades.loc[0, "path_points_seen"] == 2
     assert trades.loc[0, "exit_price"] == 0.57

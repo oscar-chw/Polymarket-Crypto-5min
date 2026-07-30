@@ -20,7 +20,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stake", type=float, default=10.0)
     parser.add_argument("--initial-capital", type=float, default=1000.0)
     parser.add_argument("--min-trades", type=int, default=20)
-    parser.add_argument("--allow-gamma-prices", action="store_true", help="Exploratory only: may use post-resolution prices")
+    parser.add_argument(
+        "--allow-gamma-prices", action="store_true", help="Exploratory only: may use post-resolution prices"
+    )
     parser.add_argument("--out-dir", default="data/processed")
     return parser.parse_args()
 
