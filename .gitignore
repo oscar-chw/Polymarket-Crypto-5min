@@ -1,4 +1,4 @@
-# Python
+# Python environments and caches
 __pycache__/
 *.py[cod]
 .venv/
@@ -6,17 +6,85 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.pytype/
+.coverage
+htmlcov/
 
-# Local data and secrets
-data/
+# Environment files and credentials
 .env
-*.sqlite
-*.db
-*.parquet
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+credentials*.json
+secrets*.json
+credentials/
+secrets/
 
-# OS/editor
+# Local data, raw dumps, and private trading records
+data/
+raw/
+private/
+artifacts/raw/
+*dump*.csv
+*dump*.json
+*dump*.jsonl
+*wallet*.csv
+*wallet*.json
+*wallet*.jsonl
+*wallet*.db
+*wallet*.sqlite
+*wallet*.sqlite3
+*account*.csv
+*account*.json
+*account*.jsonl
+*account*.db
+*account*.sqlite
+*account*.sqlite3
+*order*.csv
+*order*.json
+*order*.jsonl
+*order*.db
+*order*.sqlite
+*order*.sqlite3
+*position*.csv
+*position*.json
+*position*.jsonl
+*position*.db
+*position*.sqlite
+*position*.sqlite3
+*.sqlite
+*.sqlite3
+*.db
+*.jsonl
+
+# Large or generated binaries
+*.parquet
+*.feather
+*.arrow
+*.pickle
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.zip
+*.tar
+*.gz
+*.7z
+*.bin
+
+# OS/editor/build output
 .DS_Store
+Thumbs.db
 .idea/
 .vscode/
 *.egg-info/
 logs/
+build/
+dist/
