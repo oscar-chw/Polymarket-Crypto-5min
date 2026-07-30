@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import product
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -109,7 +109,13 @@ def threshold_report(
             value_min_model_prob=1.1,
         )
         trades = simulate_strategy(frame, thresholds, stake_usdc=stake_usdc)
-        _append_grid_row(rows, trades, bucket="CONFIRMATION", min_trades=min_trades, params={"confirm_bps": bps, "confirm_prob": prob, "min_ev": ev})
+        _append_grid_row(
+            rows,
+            trades,
+            bucket="CONFIRMATION",
+            min_trades=min_trades,
+            params={"confirm_bps": bps, "confirm_prob": prob, "min_ev": ev},
+        )
 
     for price, prob, ev in product(value_price_grid, value_prob_grid, ev_grid):
         thresholds = StrategyThresholds(
@@ -121,7 +127,13 @@ def threshold_report(
             confirm_min_model_prob=1.1,
         )
         trades = simulate_strategy(frame, thresholds, stake_usdc=stake_usdc)
-        _append_grid_row(rows, trades, bucket="VALUE_MISMATCH", min_trades=min_trades, params={"value_max_price": price, "value_prob": prob, "min_ev": ev})
+        _append_grid_row(
+            rows,
+            trades,
+            bucket="VALUE_MISMATCH",
+            min_trades=min_trades,
+            params={"value_max_price": price, "value_prob": prob, "min_ev": ev},
+        )
 
     report = pd.DataFrame(rows)
     if report.empty:

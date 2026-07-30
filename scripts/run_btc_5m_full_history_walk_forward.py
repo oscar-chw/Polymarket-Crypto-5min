@@ -31,7 +31,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", default="data/raw/full_btc_5m")
     parser.add_argument("--out-dir", default="data/processed/full_btc_5m_walk_forward")
-    parser.add_argument("--start-date-min", default=None, help="Optional ISO lower bound; omit for all available history")
+    parser.add_argument(
+        "--start-date-min", default=None, help="Optional ISO lower bound; omit for all available history"
+    )
     parser.add_argument("--start-date-max", default=None, help="Optional ISO upper bound")
     parser.add_argument("--max-pages", type=int, default=None, help="Debug only; omit for all pages")
     parser.add_argument("--price-source", choices=["clob", "trades", "both"], default="both")
@@ -99,7 +101,9 @@ def main() -> None:
         trade_prices.to_csv(raw_dir / "btc_5m_trade_price_history.csv", index=False)
         price_frames.append(trade_prices)
 
-    combined_prices = pd.concat([frame for frame in price_frames if frame is not None and not frame.empty], ignore_index=True)
+    combined_prices = pd.concat(
+        [frame for frame in price_frames if frame is not None and not frame.empty], ignore_index=True
+    )
     if not combined_prices.empty:
         combined_prices["ts"] = pd.to_datetime(combined_prices["ts"], utc=True, errors="coerce")
         combined_prices["p"] = pd.to_numeric(combined_prices["p"], errors="coerce")
@@ -141,7 +145,9 @@ def main() -> None:
     rules.to_csv(out_dir / "walk_forward_selected_rules.csv", index=False)
     metrics = performance_metrics(wf_trades, initial_capital=args.initial_capital)
     metrics.to_csv(out_dir / "walk_forward_metrics.csv", index=False)
-    equity_curve(wf_trades, initial_capital=args.initial_capital).to_csv(out_dir / "walk_forward_equity_curve.csv", index=False)
+    equity_curve(wf_trades, initial_capital=args.initial_capital).to_csv(
+        out_dir / "walk_forward_equity_curve.csv", index=False
+    )
 
     manifest = {
         "scope": "BTC 5-minute crypto markets only",
@@ -153,7 +159,9 @@ def main() -> None:
         "stake": args.stake,
         "train_markets": args.train_markets,
         "test_markets": args.test_markets,
-        "leakage_violations": int((~folds.get("leakage_check_passed", pd.Series(dtype=bool)).fillna(False)).sum()) if not folds.empty else None,
+        "leakage_violations": int((~folds.get("leakage_check_passed", pd.Series(dtype=bool)).fillna(False)).sum())
+        if not folds.empty
+        else None,
         "mdd_is_realized_only": True,
         "mark_to_market_mdd": "not available without orderbook snapshots while positions are open",
     }
@@ -169,7 +177,9 @@ def trades_to_price_history(trades: pd.DataFrame, markets: pd.DataFrame) -> pd.D
     market_lookup = markets.set_index(markets["condition_id"].astype(str))
     records: list[dict[str, object]] = []
     for _, trade in trades.iterrows():
-        condition_id = trade.get("conditionId") or trade.get("condition_id") or trade.get("market") or trade.get("marketId")
+        condition_id = (
+            trade.get("conditionId") or trade.get("condition_id") or trade.get("market") or trade.get("marketId")
+        )
         if condition_id is None:
             continue
         condition_key = str(condition_id)

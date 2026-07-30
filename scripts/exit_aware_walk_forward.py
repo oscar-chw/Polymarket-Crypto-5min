@@ -15,17 +15,26 @@ import math
 import platform
 import sys
 import time
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
 
-from polymarket_crypto_5min.exit_backtest import DEFAULT_EXIT_POLICY_GRID, generate_exit_policy_grid
-from polymarket_crypto_5min.exit_backtest import losing_trades, walk_forward_exit_backtest
+from polymarket_crypto_5min.exit_backtest import (
+    DEFAULT_EXIT_POLICY_GRID,
+    generate_exit_policy_grid,
+    losing_trades,
+    walk_forward_exit_backtest,
+)
 from polymarket_crypto_5min.features import build_training_frame, load_candles, load_markets, load_poly_prices
 from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
-from polymarket_crypto_5min.walk_forward import DEFAULT_RULE_GRID, WalkForwardConfig, generate_rule_grid, make_side_candidates
-
+from polymarket_crypto_5min.walk_forward import (
+    DEFAULT_RULE_GRID,
+    WalkForwardConfig,
+    generate_rule_grid,
+    make_side_candidates,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -42,7 +51,11 @@ def _file_record(path_value: str | Path, *, repo_relative: bool = False) -> dict
     path = Path(path_value).resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
-    display = path.relative_to(REPO).as_posix() if repo_relative and path.is_relative_to(REPO) else str(path_value).replace("\\", "/")
+    display = (
+        path.relative_to(REPO).as_posix()
+        if repo_relative and path.is_relative_to(REPO)
+        else str(path_value).replace("\\", "/")
+    )
     return {
         "path": display,
         "provenance_runtime_absolute_path": str(path),
@@ -58,9 +71,10 @@ def _json_safe(value: object) -> object:
         return [_json_safe(item) for item in value]
     if isinstance(value, (pd.Timestamp,)):
         return value.isoformat()
-    if hasattr(value, "item"):
+    item = getattr(value, "item", None)
+    if callable(item):
         try:
-            return _json_safe(value.item())
+            return _json_safe(item())
         except (TypeError, ValueError):
             pass
     if isinstance(value, float):
@@ -96,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _grid_default(values: object) -> str:
+def _grid_default(values: Iterable[object]) -> str:
     return ",".join("none" if value is None else str(value) for value in values)
 
 
@@ -131,6 +145,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     prices = load_poly_prices(args.poly_prices)
+    if prices is None:
+        raise FileNotFoundError(args.poly_prices)
     if args.side_candidates:
         candidates = pd.read_csv(args.side_candidates)
         frame = pd.DataFrame()
@@ -167,7 +183,7 @@ def main() -> None:
         "max_price": _parse_float_grid(args.grid_max_price),
         "min_abs_score_bps": _parse_float_grid(args.grid_min_abs_score_bps),
     }
-    exit_policy_grid = {
+    exit_policy_grid: dict[str, Iterable[float | int | None]] = {
         "take_profit": _parse_optional_float_grid(args.grid_take_profit),
         "target_price": _parse_optional_float_grid(args.grid_target_price),
         "stop_loss": _parse_optional_float_grid(args.grid_stop_loss),
@@ -196,7 +212,9 @@ def main() -> None:
         metrics_frame["won"] = metrics_frame["pnl_usdc"].gt(0)
     metrics = performance_metrics(metrics_frame, initial_capital=args.initial_capital)
     metrics.to_csv(out_dir / "exit_aware_metrics.csv", index=False)
-    equity_curve(metrics_frame, initial_capital=args.initial_capital).to_csv(out_dir / "exit_aware_equity_curve.csv", index=False)
+    equity_curve(metrics_frame, initial_capital=args.initial_capital).to_csv(
+        out_dir / "exit_aware_equity_curve.csv", index=False
+    )
 
     detail_cols = [
         "fold",
@@ -231,7 +249,9 @@ def main() -> None:
         "btc_3m_ago_available_at",
     ]
     if not trades.empty:
-        trades[[col for col in detail_cols if col in trades.columns]].to_csv(out_dir / "exit_aware_trade_audit.csv", index=False)
+        trades[[col for col in detail_cols if col in trades.columns]].to_csv(
+            out_dir / "exit_aware_trade_audit.csv", index=False
+        )
 
     output_paths = {
         "feature_frame": out_dir / "feature_frame.csv",
@@ -259,9 +279,7 @@ def main() -> None:
         "feature_availability_passed",
     }.issubset(frame.columns)
     feature_availability_passed = bool(
-        feature_availability_present
-        and not frame.empty
-        and frame["feature_availability_passed"].fillna(False).all()
+        feature_availability_present and not frame.empty and frame["feature_availability_passed"].fillna(False).all()
     )
     manifest = {
         "schema_version": "exit_aware_walk_forward_v2_point_in_time_availability",
@@ -277,8 +295,7 @@ def main() -> None:
         },
         "outputs": {name: _file_record(path) for name, path in output_paths.items()},
         "source_files": {
-            path.relative_to(REPO).as_posix(): _file_record(path, repo_relative=True)
-            for path in source_paths
+            path.relative_to(REPO).as_posix(): _file_record(path, repo_relative=True) for path in source_paths
         },
         "environment": {
             "python": platform.python_version(),
@@ -298,9 +315,7 @@ def main() -> None:
         "feature_availability_columns_present": feature_availability_present,
         "feature_availability_passed": feature_availability_passed,
         "feature_availability_failed_rows": (
-            int((~frame["feature_availability_passed"].fillna(False)).sum())
-            if feature_availability_present
-            else None
+            int((~frame["feature_availability_passed"].fillna(False)).sum()) if feature_availability_present else None
         ),
         "feature_available_at_max_utc": (
             pd.to_datetime(frame["feature_available_at"], utc=True, errors="coerce").max()
@@ -310,10 +325,7 @@ def main() -> None:
         "fold_rows": int(len(folds)),
         "trade_rows": int(len(trades)),
         "chronological_fold_leakage_passed": bool(folds.empty or folds["leakage_check_passed"].all()),
-        "leakage_passed": bool(
-            feature_availability_passed
-            and (folds.empty or folds["leakage_check_passed"].all())
-        ),
+        "leakage_passed": bool(feature_availability_passed and (folds.empty or folds["leakage_check_passed"].all())),
         "policy_matrix_status": "unavailable_full_configured_policy_by_time_return_matrix",
         "research_status": "research_only_not_deployable",
     }

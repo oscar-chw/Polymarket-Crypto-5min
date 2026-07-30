@@ -16,7 +16,6 @@ import pandas as pd
 
 from .features import build_training_frame
 
-
 DEFAULT_HORIZONS_SECONDS = (300, 240, 180, 120, 90, 60, 45, 30, 15)
 
 
@@ -194,7 +193,9 @@ def _summary_metadata(summary: pd.DataFrame, details: pd.DataFrame, *, fold_mark
         "exponential_decay_fit_r2": fit_r2,
         "default_45s": default.iloc[0].to_dict() if len(default) == 1 else None,
         "timestamp_semantics": "Binance final candle values indexed at close availability, never candle open",
-        "feature_availability_gate_passed": bool(details["feature_availability_passed"].all()) if not details.empty else False,
+        "feature_availability_gate_passed": bool(details["feature_availability_passed"].all())
+        if not details.empty
+        else False,
         "calibration_scope": "raw heuristic probability; prior-only empirical calibration is evaluated separately inside each trading fold",
         "interpretation": (
             "Forecast-horizon association only. It is not calendar decay, executable edge, "

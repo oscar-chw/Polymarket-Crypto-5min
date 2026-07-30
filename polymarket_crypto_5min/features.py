@@ -168,8 +168,7 @@ def build_training_frame(
         rows[f"btc_{name}"] = observed["close"]
         rows[f"btc_{name}_available_at"] = observed["available_at"]
         rows[f"btc_{name}_age_seconds"] = (
-            pd.to_datetime(when, utc=True).reset_index(drop=True)
-            - pd.to_datetime(observed["available_at"], utc=True)
+            pd.to_datetime(when, utc=True).reset_index(drop=True) - pd.to_datetime(observed["available_at"], utc=True)
         ).dt.total_seconds()
 
     feature_availability = rows[
@@ -208,8 +207,12 @@ def build_training_frame(
     rows["market_down_price"] = rows["market_down_price"].where(rows["market_down_price"].notna(), down_hist)
 
     if allow_gamma_prices:
-        rows["market_up_price"] = rows["market_up_price"].where(rows["market_up_price"].notna(), rows.get("gamma_up_price"))
-        rows["market_down_price"] = rows["market_down_price"].where(rows["market_down_price"].notna(), rows.get("gamma_down_price"))
+        rows["market_up_price"] = rows["market_up_price"].where(
+            rows["market_up_price"].notna(), rows.get("gamma_up_price")
+        )
+        rows["market_down_price"] = rows["market_down_price"].where(
+            rows["market_down_price"].notna(), rows.get("gamma_down_price")
+        )
     rows["market_down_price"] = rows["market_down_price"].where(
         rows["market_down_price"].notna(), 1.0 - rows["market_up_price"]
     )
@@ -222,8 +225,12 @@ def build_training_frame(
         noise_bps=probability_noise_bps,
     )
     rows["chosen_direction"] = np.where(rows["model_prob_up"] >= 0.5, "UP", "DOWN")
-    rows["chosen_prob"] = np.where(rows["chosen_direction"].eq("UP"), rows["model_prob_up"], 1.0 - rows["model_prob_up"])
-    rows["market_price"] = np.where(rows["chosen_direction"].eq("UP"), rows["market_up_price"], rows["market_down_price"])
+    rows["chosen_prob"] = np.where(
+        rows["chosen_direction"].eq("UP"), rows["model_prob_up"], 1.0 - rows["model_prob_up"]
+    )
+    rows["market_price"] = np.where(
+        rows["chosen_direction"].eq("UP"), rows["market_up_price"], rows["market_down_price"]
+    )
     rows["fee_per_share"] = taker_fee_per_share(rows["market_price"], fee_rate=fee_rate)
     rows["expected_value_per_share"] = rows["chosen_prob"] - rows["market_price"] - rows["fee_per_share"]
     rows["won"] = rows["chosen_direction"].eq(rows["realized_direction"])
@@ -252,9 +259,7 @@ def asof_candle(candles: pd.DataFrame, when: pd.Series) -> pd.DataFrame:
     lookup = pd.DataFrame({"_row": np.arange(len(when)), "ts": _datetime64ns_utc(pd.to_datetime(when, utc=True))})
     lookup = lookup.sort_values("ts")
     right = candles[["ts", "close"]].rename(columns={"ts": "available_at"}).copy()
-    right["available_at"] = _datetime64ns_utc(
-        pd.to_datetime(right["available_at"], utc=True, errors="coerce")
-    )
+    right["available_at"] = _datetime64ns_utc(pd.to_datetime(right["available_at"], utc=True, errors="coerce"))
     merged = pd.merge_asof(
         lookup,
         right.sort_values("available_at"),
@@ -301,7 +306,9 @@ def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataF
             h_asset = h[h["asset_id"].eq(asset_id)].sort_values("ts")
             if h_asset.empty:
                 continue
-            lookup = pd.DataFrame({"_index": list(idx), "ts": _datetime64ns_utc(markets.loc[idx, "snapshot_dt"])}).sort_values("ts")
+            lookup = pd.DataFrame(
+                {"_index": list(idx), "ts": _datetime64ns_utc(markets.loc[idx, "snapshot_dt"])}
+            ).sort_values("ts")
             merged = pd.merge_asof(lookup, h_asset[["ts", "p"]], on="ts", direction="backward")
             result.loc[merged["_index"].to_numpy()] = merged["p"].to_numpy()
     return result
@@ -346,7 +353,9 @@ def profit_per_share(price: Any, won: Any, *, fee_rate: float = DEFAULT_CRYPTO_T
     p = pd.to_numeric(price, errors="coerce") if isinstance(price, pd.Series) else to_float(price)
     fee = taker_fee_per_share(p, fee_rate=fee_rate)
     if isinstance(price, pd.Series):
-        won_series = pd.Series(won, index=price.index).astype(bool) if not isinstance(won, pd.Series) else won.astype(bool)
+        won_series = (
+            pd.Series(won, index=price.index).astype(bool) if not isinstance(won, pd.Series) else won.astype(bool)
+        )
         return np.where(won_series, 1.0 - p - fee, -p - fee)
     return (1.0 - p - fee) if bool(won) else (-p - fee)
 

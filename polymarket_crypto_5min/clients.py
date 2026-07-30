@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any
 
 import pandas as pd
 import requests
@@ -19,7 +20,7 @@ from .config import (
     DEFAULT_MAX_RETRIES,
     GAMMA_BASE_URL,
 )
-from .utils import parse_dt, to_float
+from .utils import to_float
 
 LOGGER = logging.getLogger(__name__)
 
@@ -107,8 +108,7 @@ class GammaClient:
             events = payload.get("events") or payload.get("data") or []
             if not events:
                 break
-            for event in events:
-                yield event
+            yield from events
             cursor = payload.get("next_cursor")
             if not cursor or cursor in {"LTE=", "-1"}:
                 break
@@ -226,8 +226,7 @@ class BinanceClient:
             batch = self.klines(symbol=symbol, interval=interval, start=current_ms, end=end_ms, limit=limit)
             if not batch:
                 break
-            for row in batch:
-                yield row
+            yield from batch
             last_open_ms = int(batch[-1][0])
             next_ms = last_open_ms + _interval_ms(interval)
             if next_ms <= current_ms:

@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -77,11 +78,7 @@ def is_bitcoin_5min_event(event: dict[str, Any]) -> bool:
         market_text,
     )
     has_five_min_hint = any_substring(text, FIVE_MIN_NEEDLES) or WINDOW_RE.search(text)
-    return (
-        any_substring(text, BITCOIN_NEEDLES)
-        and bool(has_five_min_hint)
-        and any_substring(text, DIRECTION_NEEDLES)
-    )
+    return any_substring(text, BITCOIN_NEEDLES) and bool(has_five_min_hint) and any_substring(text, DIRECTION_NEEDLES)
 
 
 def flatten_event_markets(event: dict[str, Any]) -> list[dict[str, Any]]:

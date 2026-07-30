@@ -8,9 +8,9 @@ closed before the test fold.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from itertools import product
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -211,7 +211,7 @@ def simulate_candidate_trades(
     return trades.reset_index(drop=True)
 
 
-def generate_rule_grid(rule_grid: dict[str, Iterable[float]] | None = None) -> list[WalkForwardRule]:
+def generate_rule_grid(rule_grid: Mapping[str, Iterable[float]] | None = None) -> list[WalkForwardRule]:
     grid = rule_grid or DEFAULT_RULE_GRID
     rules: list[WalkForwardRule] = []
     for edge, p_lower, min_price, max_price, abs_bps in product(
@@ -279,7 +279,7 @@ def walk_forward_backtest(
     candidates: pd.DataFrame,
     *,
     config: WalkForwardConfig | None = None,
-    rule_grid: dict[str, Iterable[float]] | None = None,
+    rule_grid: Mapping[str, Iterable[float]] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run a strict expanding-window walk-forward backtest.
 
@@ -292,10 +292,7 @@ def walk_forward_backtest(
     rows["end_dt"] = pd.to_datetime(rows["end_dt"], utc=True, errors="coerce")
     rows = rows.dropna(subset=["condition_id", "end_dt", "market_price", "won"]).sort_values(["end_dt", "condition_id"])
     ordered_markets = (
-        rows[["condition_id", "end_dt"]]
-        .drop_duplicates("condition_id")
-        .sort_values("end_dt")
-        .reset_index(drop=True)
+        rows[["condition_id", "end_dt"]].drop_duplicates("condition_id").sort_values("end_dt").reset_index(drop=True)
     )
     n_markets = len(ordered_markets)
     if n_markets <= cfg.train_markets:

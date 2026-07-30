@@ -20,7 +20,6 @@ from polymarket_crypto_5min.signal_diagnostics import (
     json_safe,
 )
 
-
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -66,9 +65,7 @@ def main() -> None:
     if args.generated_utc:
         generated_at = pd.Timestamp(args.generated_utc)
         generated_at = (
-            generated_at.tz_localize("UTC")
-            if generated_at.tzinfo is None
-            else generated_at.tz_convert("UTC")
+            generated_at.tz_localize("UTC") if generated_at.tzinfo is None else generated_at.tz_convert("UTC")
         )
         generated_utc = generated_at.isoformat()
     else:
@@ -83,14 +80,10 @@ def main() -> None:
             "source_files": {
                 "scripts/analyze_btc_signal_horizons.py": _file_record(__file__),
                 "polymarket_crypto_5min/signal_diagnostics.py": _file_record(
-                    Path(__file__).resolve().parents[1]
-                    / "polymarket_crypto_5min"
-                    / "signal_diagnostics.py"
+                    Path(__file__).resolve().parents[1] / "polymarket_crypto_5min" / "signal_diagnostics.py"
                 ),
                 "polymarket_crypto_5min/features.py": _file_record(
-                    Path(__file__).resolve().parents[1]
-                    / "polymarket_crypto_5min"
-                    / "features.py"
+                    Path(__file__).resolve().parents[1] / "polymarket_crypto_5min" / "features.py"
                 ),
             },
             "environment": {

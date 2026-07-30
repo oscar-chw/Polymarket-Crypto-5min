@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from dateutil import parser as date_parser
 
