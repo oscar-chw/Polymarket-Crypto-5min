@@ -37,7 +37,7 @@ Final OHLCV values are indexed at the first timestamp when the exchange candle i
 ```powershell
 git clone https://github.com/hihihhi/Polymarket-Crypto-5min.git
 cd Polymarket-Crypto-5min
-uv sync --extra dev --frozen
+uv sync --python 3.12 --extra dev --frozen
 uv run pytest -q
 
 # Bounded public-data download for an API-shape check.
