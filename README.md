@@ -1,12 +1,30 @@
-# Point-in-Time Polymarket Bitcoin Research
+# Polymarket Bitcoin 5-Minute Backtester: Point-in-Time Walk-Forward Research
 
-Research-only Python tooling for point-in-time, walk-forward analysis of Polymarket Bitcoin five-minute Up/Down markets; it downloads public data and simulates strategies but never places orders.
+Research-only Python tooling for point-in-time, walk-forward backtests of Polymarket's Bitcoin five-minute Up/Down markets; it downloads public data and simulates strategies but never places orders.
+It caught and fixed a look-ahead leak: Binance one-minute candles were indexed at their open time while carrying their final close, which [invalidated an earlier positive backtest](docs/EXIT_AWARE_RESEARCH_PLAN.md#2026-07-07-result--withdrawn-after-the-availability-safe-rerun).
+The corrected run selects among 512 entry rules × 192 exit policies over 26 chronological walk-forward folds, calibrating each test fold only on earlier markets; its out-of-sample metrics and limits are under [Results](#results).
+Quick check: `uv sync --python 3.12 --extra dev --frozen && uv run pytest -q` (full steps in [Run it](#run-it)).
 
-## Status & honesty
+Implemented with AI coding agents under Oscar's design and review.
 
-The availability-safe selected result is negative. The exact `ALL` row in the local ignored run artifact `data/processed/exit_aware_walk_forward_availability_safe_grid/exit_aware_metrics.csv:2` records: `trades=16`, `wins=12`, `win_rate=0.75`, `total_pnl_usdc=-12.311260584407641`, `total_stake_usdc=160.0`, `roi_on_stake=-0.07694537865254776`, `return_on_initial_capital=-0.006155630292203821`, `trade_sharpe=-0.1387264673847573`, `daily_sharpe=-7.567719409564401`, `max_drawdown_usdc=-34.032470975482056`, `max_drawdown_pct=-0.016923230624928485`, and `profit_factor=0.692218485389809`.
+## Results
 
-**Status label:** selected chronological walk-forward OOS; trial-exposed, modeled historical; not live, cash, or executable proof. The corresponding manifest records final Binance OHLCV at candle-close availability, calibration of each test fold from preceding training markets only, exclusion of unresolved markets and post-resolution Gamma prices from features by default, and selection exposed across `512` entry rules and `192` exit policies. PBO and deflated Sharpe are unavailable because the full policy-by-time return matrix was not retained. The earlier positive `$52.74` OOS figure in `docs/EXIT_AWARE_RESEARCH_PLAN.md` predates the candle-availability correction and is withdrawn.
+**Status label:** selected chronological walk-forward OOS; trial-exposed, modeled historical; not live, cash, or executable proof.
+
+The availability-safe selected result is negative. The `ALL` row of the run's metrics file (`data/processed/exit_aware_walk_forward_availability_safe_grid/exit_aware_metrics.csv:2`, a local generated artifact excluded from Git; hash under [Provenance](#provenance)) records, rounded:
+
+| Metric | Value |
+|---|---|
+| Selected trades / profitable | 16 / 12 (75% win rate) |
+| Net PnL | -$12.31 on $160 staked (-7.7% on stake) |
+| Return on $2,000 initial capital | -0.62% |
+| Max realized drawdown | -$34.03 (-1.69%) |
+| Profit factor | 0.69 |
+| Sharpe (per trade / daily) | -0.14 / -7.57 |
+
+The corresponding manifest records final Binance OHLCV at candle-close availability, calibration of each test fold from preceding training markets only, exclusion of unresolved markets and post-resolution Gamma prices from features by default, and selection exposed across `512` entry rules and `192` exit policies. PBO and deflated Sharpe are unavailable because the full policy-by-time return matrix was not retained.
+
+The earlier positive `$52.74` OOS figure (58 trades) in [docs/EXIT_AWARE_RESEARCH_PLAN.md](docs/EXIT_AWARE_RESEARCH_PLAN.md) predates the candle-availability correction and is withdrawn: it joined final candle values at the candle-open timestamp, before they were available.
 
 ![Selected availability-safe modeled historical OOS equity; trial-exposed and not live evidence](docs/availability_safe_oos_equity_curve.png)
 
