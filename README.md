@@ -131,7 +131,7 @@ Markets are ordered by end time; each fold trains on every earlier market and te
 | Max realized drawdown | −$34.03 (−1.69%) | [docs/results.md](docs/results.md) |
 | Profit factor; Sharpe per trade / daily | 0.69; −0.14 / −7.57 | [docs/results.md](docs/results.md) |
 | PBO, deflated Sharpe | unavailable: the policy-by-time return matrix was not retained | [docs/results.md](docs/results.md) |
-| Offline tests | 42 pass, including the no-look-ahead, entry-price, exit-timing and chronological-fold invariants | [tests/](tests/) |
+| Offline tests | 45 pass, including the no-look-ahead, entry-price, exit-timing and chronological-fold invariants | [tests/](tests/) |
 
 The availability-safe selected result is negative. Metrics come from a local generated artifact excluded from Git; its
 hash, the run manifest and the equity chart are in [docs/results.md](docs/results.md). These figures predate the
@@ -142,7 +142,7 @@ hash, the run manifest and the equity chart are in [docs/results.md](docs/result
 ```bash
 git clone https://github.com/oscar-chw/Polymarket-Crypto-5min.git && cd Polymarket-Crypto-5min
 uv sync --python 3.12 --extra dev --frozen
-uv run pytest -q                                          # expect: 42 passed
+uv run pytest -q                                          # expect: 45 passed
 uv run python scripts/download_history.py --max-pages 2   # bounded public-data API-shape check
 uv run python scripts/run_btc_5m_full_history_walk_forward.py --initial-capital 2000 --stake 10 \
   --train-markets 400 --test-markets 100 --price-source both   # full download, base walk-forward
