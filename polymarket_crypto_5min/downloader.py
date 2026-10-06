@@ -224,7 +224,10 @@ def parse_market_window_from_text(
         return None
     if reference_dt is None:
         return windows[0]
-    return min(windows, key=lambda window: abs(window[1] - reference_dt))
+    # Both fall-back candidates can end at the reference time (a 1:55AM-2:00AM
+    # title ends at 07:00Z either way), so the end distance ties. Break the tie
+    # by the shortest window: a 5-minute market must not become a 65-minute one.
+    return min(windows, key=lambda window: (abs(window[1] - reference_dt), window[1] - window[0]))
 
 
 _ZONE_OFFSETS = {"EDT": timedelta(hours=-4), "EST": timedelta(hours=-5)}

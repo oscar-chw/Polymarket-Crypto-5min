@@ -496,6 +496,14 @@ def test_et_window_crossing_the_fall_back_instant_lasts_five_minutes() -> None:
     assert (start, end) == (pd.Timestamp("2026-11-01T05:55:00Z"), pd.Timestamp("2026-11-01T06:00:00Z"))
 
 
+def test_et_window_ending_at_the_fall_back_instant_is_five_minutes_not_sixty_five() -> None:
+    # 1:55AM EDT is 05:55Z and 1:55AM EST is 06:55Z; 2:00AM EST is 07:00Z. Both
+    # candidates end at 07:00Z, so only the window length can pick the right one.
+    start, end = _flattened_window("Bitcoin Up or Down - November 1, 1:55AM-2:00AM ET", "2026-11-01T07:00:00Z")
+
+    assert (start, end) == (pd.Timestamp("2026-11-01T06:55:00Z"), pd.Timestamp("2026-11-01T07:00:00Z"))
+
+
 def test_et_window_on_december_31_evening_keeps_its_own_year() -> None:
     # 7:00-7:05 PM EST on Dec 31 ends at 00:05Z on Jan 1, so the UTC end date is next year.
     start, end = _flattened_window("Bitcoin Up or Down - December 31, 7:00PM-7:05PM ET", "2027-01-01T00:05:00Z")
