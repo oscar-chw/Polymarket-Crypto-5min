@@ -11,6 +11,7 @@ import pandas as pd
 
 import polymarket_crypto_5min.walk_forward as walk_forward_module
 from polymarket_crypto_5min.clients import BinanceClient
+from polymarket_crypto_5min.downloader import flatten_market, parse_market_window_from_text
 from polymarket_crypto_5min.exit_backtest import ExitPolicy, simulate_exit_policy, walk_forward_exit_backtest
 from polymarket_crypto_5min.features import (
     ENTRY_PRICE_RULE,
@@ -460,3 +461,50 @@ def test_btc_features_from_a_candle_gap_are_dropped_not_reused() -> None:
     assert frame.attrs["btc_stale_rows_dropped"] == 1
     for name in ("start", "snapshot", "1m_ago", "3m_ago"):
         assert frame.loc[0, f"btc_{name}_age_seconds"] <= 60
+
+
+def _flattened_window(question: str, end_date: str) -> tuple[pd.Timestamp, pd.Timestamp]:
+    market = {
+        "question": question,
+        "conditionId": "0xabc",
+        "outcomes": '["Up", "Down"]',
+        "clobTokenIds": '["1", "2"]',
+        "endDate": end_date,
+        "endDateIso": end_date[:10],
+    }
+    row = flatten_market({"title": question, "markets": [market]}, market)
+    return pd.Timestamp(row["start_ts"], unit="s", tz="UTC"), pd.Timestamp(row["end_ts"], unit="s", tz="UTC")
+
+
+def test_et_window_parsing_resolves_both_fall_back_hour_occurrences() -> None:
+    # 2026-11-01 is the US fall-back date: 1:30 AM happens at 05:30Z (EDT) and 06:30Z (EST).
+    question = "Bitcoin Up or Down - November 1, 1:30AM-1:35AM ET"
+
+    assert _flattened_window(question, "2026-11-01T05:35:00Z") == (
+        pd.Timestamp("2026-11-01T05:30:00Z"),
+        pd.Timestamp("2026-11-01T05:35:00Z"),
+    )
+    assert _flattened_window(question, "2026-11-01T06:35:00Z") == (
+        pd.Timestamp("2026-11-01T06:30:00Z"),
+        pd.Timestamp("2026-11-01T06:35:00Z"),
+    )
+
+
+def test_et_window_crossing_the_fall_back_instant_lasts_five_minutes() -> None:
+    start, end = _flattened_window("Bitcoin Up or Down - November 1, 1:55AM-1:00AM ET", "2026-11-01T06:00:00Z")
+
+    assert (start, end) == (pd.Timestamp("2026-11-01T05:55:00Z"), pd.Timestamp("2026-11-01T06:00:00Z"))
+
+
+def test_et_window_on_december_31_evening_keeps_its_own_year() -> None:
+    # 7:00-7:05 PM EST on Dec 31 ends at 00:05Z on Jan 1, so the UTC end date is next year.
+    start, end = _flattened_window("Bitcoin Up or Down - December 31, 7:00PM-7:05PM ET", "2027-01-01T00:05:00Z")
+
+    assert (start, end) == (pd.Timestamp("2027-01-01T00:00:00Z"), pd.Timestamp("2027-01-01T00:05:00Z"))
+
+
+def test_et_window_zone_suffix_fixes_the_fall_back_occurrence() -> None:
+    window = parse_market_window_from_text("November 1, 1:30AM-1:35AM EST", fallback_year=2026)
+
+    assert window is not None
+    assert pd.Timestamp(window[0]) == pd.Timestamp("2026-11-01T06:30:00Z")

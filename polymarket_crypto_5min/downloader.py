@@ -39,7 +39,7 @@ DIRECTION_NEEDLES = ("up or down", "up/down", "higher", "lower", "above", "below
 WINDOW_RE = re.compile(
     r"(?P<month>[A-Za-z]+)\s+(?P<day>\d{1,2}),\s*"
     r"(?P<shour>\d{1,2})(?::(?P<sminute>\d{2}))?\s*(?P<sampm>AM|PM)\s*[-–]\s*"
-    r"(?P<ehour>\d{1,2})(?::(?P<eminute>\d{2}))?\s*(?P<eampm>AM|PM)\s*(?:ET|EST|EDT)?",
+    r"(?P<ehour>\d{1,2})(?::(?P<eminute>\d{2}))?\s*(?P<eampm>AM|PM)\s*(?P<zone>ET|EST|EDT)?",
     re.IGNORECASE,
 )
 
@@ -117,8 +117,8 @@ def flatten_market(event: dict[str, Any], market: dict[str, Any]) -> dict[str, A
     condition_id = market.get("conditionId") or market.get("condition_id") or market.get("market")
 
     question_text = market.get("question") or event.get("title") or market.get("slug") or event.get("slug") or ""
-    fallback_year = infer_year(event, market)
-    parsed_window = parse_market_window_from_text(question_text, fallback_year=fallback_year)
+    reference_dt = infer_reference_dt(event, market)
+    parsed_window = parse_market_window_from_text(question_text, reference_dt=reference_dt)
     if parsed_window is not None:
         start_date, end_date = parsed_window
 
@@ -166,16 +166,27 @@ def flatten_market(event: dict[str, Any], market: dict[str, Any]) -> dict[str, A
     }
 
 
-def parse_market_window_from_text(text: str, *, fallback_year: int | None = None) -> tuple[datetime, datetime] | None:
+def parse_market_window_from_text(
+    text: str,
+    *,
+    fallback_year: int | None = None,
+    reference_dt: datetime | None = None,
+) -> tuple[datetime, datetime] | None:
     """Parse titles like ``Bitcoin Up or Down - July 2, 5:30PM-5:35PM ET``.
 
     Gamma often stores the event start/end as a full UTC day for these markets;
     the actual tradable five-minute window is embedded in the market title.
+
+    Titles carry no year and, in the US fall-back hour, the same wall time
+    occurs twice. Both are resolved against ``reference_dt`` (the market's UTC
+    end): every candidate year and DST fold is built and the window ending
+    closest to it wins. An ``EDT``/``EST`` suffix fixes the fold outright.
+    Without a reference, ``fallback_year`` (or the current year) and the
+    first occurrence are used.
     """
     match = WINDOW_RE.search(str(text or ""))
     if not match:
         return None
-    year = fallback_year or datetime.now(timezone.utc).year
     month_name = match.group("month").title()
     try:
         month_num = datetime.strptime(month_name[:3], "%b").month
@@ -186,28 +197,67 @@ def parse_market_window_from_text(text: str, *, fallback_year: int | None = None
     ehour = _to_24h(int(match.group("ehour")), match.group("eampm"))
     sminute = int(match.group("sminute") or 0)
     eminute = int(match.group("eminute") or 0)
-    try:
-        start_local = datetime(year, month_num, day, shour, sminute, tzinfo=NY_TZ)
-        end_local = datetime(year, month_num, day, ehour, eminute, tzinfo=NY_TZ)
-    except ValueError:
+    zone = (match.group("zone") or "ET").upper()
+    if reference_dt is not None:
+        years = [reference_dt.year - 1, reference_dt.year, reference_dt.year + 1]
+    else:
+        years = [fallback_year or datetime.now(timezone.utc).year]
+
+    windows: list[tuple[datetime, datetime]] = []
+    for year in years:
+        try:
+            start_day = datetime(year, month_num, day)
+        except ValueError:
+            continue
+        for start_utc in _ny_wall_time_to_utc(start_day, shour, sminute):
+            if zone in _ZONE_OFFSETS and start_utc.astimezone(NY_TZ).utcoffset() != _ZONE_OFFSETS[zone]:
+                continue
+            end_candidates = [
+                end_utc
+                for offset_days in (0, 1)
+                for end_utc in _ny_wall_time_to_utc(start_day + timedelta(days=offset_days), ehour, eminute)
+                if end_utc > start_utc
+            ]
+            if end_candidates:
+                windows.append((start_utc, min(end_candidates)))
+    if not windows:
         return None
-    if end_local <= start_local:
-        end_local += timedelta(days=1)
-    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+    if reference_dt is None:
+        return windows[0]
+    return min(windows, key=lambda window: abs(window[1] - reference_dt))
 
 
-def infer_year(event: dict[str, Any], market: dict[str, Any]) -> int | None:
+_ZONE_OFFSETS = {"EDT": timedelta(hours=-4), "EST": timedelta(hours=-5)}
+
+
+def _ny_wall_time_to_utc(day: datetime, hour: int, minute: int) -> list[datetime]:
+    """Every UTC instant that shows this New York wall time on this date.
+
+    Two in the fall-back hour, none in the spring-forward gap, else one.
+    """
+    instants: list[datetime] = []
+    for fold in (0, 1):
+        local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=NY_TZ, fold=fold)
+        instant = local.astimezone(timezone.utc)
+        round_trip = instant.astimezone(NY_TZ)
+        if (round_trip.hour, round_trip.minute) == (hour, minute) and instant not in instants:
+            instants.append(instant)
+    return instants
+
+
+def infer_reference_dt(event: dict[str, Any], market: dict[str, Any]) -> datetime | None:
+    """The market's UTC end, preferring full timestamps over date-only fields."""
     for value in (
-        market.get("endDateIso"),
         market.get("endDate"),
         event.get("endDate"),
+        market.get("endDateIso"),
         market.get("closedTime"),
         event.get("closedTime"),
         event.get("startDate"),
     ):
         dt = parse_dt(value)
         if dt is not None:
-            return dt.year
+            return dt
     return None
 
 
