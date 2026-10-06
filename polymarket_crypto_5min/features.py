@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,13 @@ from .config import DEFAULT_CRYPTO_TAKER_FEE_RATE
 from .resolution import append_resolved_outcomes
 from .utils import parse_jsonish, sigmoid, to_float
 
+LOGGER = logging.getLogger(__name__)
+
+# One-minute candles indexed at close availability are at most 60 s old when
+# none is missing. An older join means a gap in the candle file, and the
+# feature would measure drift over the gap rather than over the market.
+DEFAULT_MAX_BTC_CANDLE_AGE_SECONDS = 60.0
+BTC_FEATURE_LOOKUPS = ("start", "snapshot", "1m_ago", "3m_ago")
 # The backtest has no historical order book, so it cannot fill at the ask that
 # ``live_signal.py`` pays. It fills at the last CLOB/trade print inside the
 # market window, at or before the decision, and no older than the configured
@@ -138,6 +146,7 @@ def build_training_frame(
     require_resolved_outcome: bool = True,
     allow_external_btc_outcome_fallback: bool = False,
     max_entry_price_age_seconds: float = DEFAULT_MAX_ENTRY_PRICE_AGE_SECONDS,
+    max_btc_candle_age_seconds: float = DEFAULT_MAX_BTC_CANDLE_AGE_SECONDS,
 ) -> pd.DataFrame:
     """Build one point-in-time row per market for threshold research.
 
@@ -152,6 +161,10 @@ def build_training_frame(
     Entry prices follow ``ENTRY_PRICE_RULE``: the last print with
     ``start_dt <= ts <= snapshot_dt`` and age at most
     ``max_entry_price_age_seconds``. Rows with no such print get no price.
+
+    Rows whose start, snapshot, 1m-ago or 3m-ago BTC candle is missing or
+    older than ``max_btc_candle_age_seconds`` are dropped; the count is logged
+    and kept in ``frame.attrs["btc_stale_rows_dropped"]``.
     """
     required = {"condition_id", "start_ts", "end_ts"}
     missing = required - set(markets.columns)
@@ -183,6 +196,18 @@ def build_training_frame(
             pd.to_datetime(when, utc=True).reset_index(drop=True) - pd.to_datetime(observed["available_at"], utc=True)
         ).dt.total_seconds()
 
+    fresh = pd.Series(True, index=rows.index)
+    for name in BTC_FEATURE_LOOKUPS:
+        fresh &= rows[f"btc_{name}_age_seconds"].le(max_btc_candle_age_seconds)
+    stale_rows = int((~fresh).sum())
+    if stale_rows:
+        LOGGER.warning(
+            "Dropping %d market rows with BTC candles missing or older than %.0f s",
+            stale_rows,
+            max_btc_candle_age_seconds,
+        )
+    rows = rows[fresh].reset_index(drop=True)
+
     feature_availability = rows[
         [
             "btc_start_available_at",
@@ -209,6 +234,7 @@ def build_training_frame(
         allow_external_btc_fallback=allow_external_btc_outcome_fallback,
         external_direction_col="btc_external_direction",
     )
+    rows.attrs["btc_stale_rows_dropped"] = stale_rows
     if rows.empty:
         return rows
 

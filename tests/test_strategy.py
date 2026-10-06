@@ -376,8 +376,14 @@ def test_external_btc_is_not_used_as_label_when_polymarket_resolved_differs() ->
     )
     candles = pd.DataFrame(
         {
-            "ts": pd.to_datetime([1_700_001_000, 1_700_001_240, 1_700_001_300], unit="s", utc=True),
-            "close": [100, 110, 120],
+            # One candle per minute: a gap would make the 1m/3m-ago features
+            # stale, and stale rows are dropped before labels are compared.
+            "ts": pd.to_datetime(
+                [1_700_001_000, 1_700_001_060, 1_700_001_120, 1_700_001_180, 1_700_001_240, 1_700_001_300],
+                unit="s",
+                utc=True,
+            ),
+            "close": [100, 102, 104, 106, 110, 120],
         }
     )
     poly_prices = pd.DataFrame(

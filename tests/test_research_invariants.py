@@ -428,3 +428,35 @@ def test_full_history_runner_writes_results_when_folds_do_not_leak(tmp_path: Pat
     assert result.returncode == 0, result.stdout + result.stderr
     assert (out / "walk_forward_trades.csv").is_file()
     assert '"leakage_violations": 0' in result.stdout
+
+
+def test_btc_features_from_a_candle_gap_are_dropped_not_reused() -> None:
+    # Candle file gap 12:00-12:30: the 12:20 market would otherwise take its
+    # start and snapshot prices from the 12:00 candle and score 20+ minutes of drift.
+    ok_start = pd.Timestamp("2026-07-05T11:50:00Z")
+    gap_start = pd.Timestamp("2026-07-05T12:20:00Z")
+    markets = pd.DataFrame(
+        [
+            {
+                "condition_id": condition_id,
+                "start_ts": int(start.timestamp()),
+                "end_ts": int(start.timestamp()) + 300,
+                "up_asset_id": f"up-{condition_id}",
+                "down_asset_id": f"down-{condition_id}",
+                "outcomes": ["Up", "Down"],
+                "outcome_prices": [1, 0],
+            }
+            for condition_id, start in (("ok", ok_start), ("gap", gap_start))
+        ]
+    )
+    candle_ts = pd.date_range("2026-07-05T11:40:00Z", "2026-07-05T12:00:00Z", freq="1min").append(
+        pd.date_range("2026-07-05T12:30:00Z", "2026-07-05T12:40:00Z", freq="1min")
+    )
+    candles = pd.DataFrame({"ts": candle_ts, "close": [100.0 + 0.1 * i for i in range(len(candle_ts))]})
+
+    frame = build_training_frame(markets, candles, None, snapshot_seconds_before_close=45)
+
+    assert frame["condition_id"].tolist() == ["ok"]
+    assert frame.attrs["btc_stale_rows_dropped"] == 1
+    for name in ("start", "snapshot", "1m_ago", "3m_ago"):
+        assert frame.loc[0, f"btc_{name}_age_seconds"] <= 60
