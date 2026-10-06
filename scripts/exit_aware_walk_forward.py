@@ -23,6 +23,7 @@ import pandas as pd
 
 from polymarket_crypto_5min.exit_backtest import (
     DEFAULT_EXIT_POLICY_GRID,
+    MAX_HOLD_NO_PRICE,
     generate_exit_policy_grid,
     losing_trades,
     walk_forward_exit_backtest,
@@ -324,6 +325,10 @@ def main() -> None:
         ),
         "fold_rows": int(len(folds)),
         "trade_rows": int(len(trades)),
+        "exit_reason_counts": (
+            {str(k): int(v) for k, v in trades["exit_reason"].value_counts().items()} if not trades.empty else {}
+        ),
+        "max_hold_no_price_trades": int(trades["exit_reason"].eq(MAX_HOLD_NO_PRICE).sum()) if not trades.empty else 0,
         "chronological_fold_leakage_passed": bool(folds.empty or folds["leakage_check_passed"].all()),
         "leakage_passed": bool(feature_availability_passed and (folds.empty or folds["leakage_check_passed"].all())),
         "policy_matrix_status": "unavailable_full_configured_policy_by_time_return_matrix",

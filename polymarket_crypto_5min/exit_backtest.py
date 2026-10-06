@@ -47,6 +47,12 @@ DEFAULT_EXIT_POLICY_GRID = {
     "max_hold_seconds": (10, 20, 30, None),
 }
 
+# A max-hold policy whose hold window has no price point cannot exit, so it is
+# settled. It gets its own reason so it is not read as a chosen hold or a
+# risk-reducing exit; the grid deliberately excludes pure hold-to-settlement.
+MAX_HOLD_NO_PRICE = "MAX_HOLD_NO_PRICE"
+SETTLED_EXIT_REASONS = frozenset({"HOLD_TO_SETTLEMENT", MAX_HOLD_NO_PRICE})
+
 
 def generate_exit_policy_grid(
     policy_grid: Mapping[str, Iterable[float | int | None]] | None = None,
@@ -130,7 +136,8 @@ def simulate_exit_policy(
 
     ``entries`` should be candidate rows selected by a walk-forward entry rule.
     The function emits one row per entry, even if no post-entry price history is
-    available. Missing path rows default to holding to settlement.
+    available. Missing path rows settle; under a max-hold policy they are
+    marked ``MAX_HOLD_NO_PRICE``.
     """
     if entries.empty:
         return pd.DataFrame()
@@ -184,14 +191,16 @@ def _simulate_one_exit(
             exit_fee = float(taker_fee_per_share(exit_price, fee_rate=policy.exit_fee_rate))
             break
     else:
-        if policy.max_hold_seconds is not None and not path.empty:
+        if policy.max_hold_seconds is not None and path.empty:
+            exit_reason = MAX_HOLD_NO_PRICE
+        elif policy.max_hold_seconds is not None:
             last = path.iloc[-1]
             exit_reason = "MAX_HOLD_EXIT"
             exit_dt = pd.to_datetime(last["ts"], utc=True)
             exit_price = float(last["p"])
             exit_fee = float(taker_fee_per_share(exit_price, fee_rate=policy.exit_fee_rate))
 
-    if exit_reason == "HOLD_TO_SETTLEMENT":
+    if exit_reason in SETTLED_EXIT_REASONS:
         pnl_per_share = (1.0 - entry_price - entry_fee) if won else (-entry_price - entry_fee)
         realized_settlement = True
     else:
@@ -451,6 +460,9 @@ def walk_forward_exit_backtest(
                 "test_end_dt": test["end_dt"].max(),
                 "leakage_check_passed": leakage_ok,
                 "test_trades": int(len(trades)),
+                "test_max_hold_no_price_trades": int(trades["exit_reason"].eq(MAX_HOLD_NO_PRICE).sum())
+                if not trades.empty
+                else 0,
                 "test_pnl_usdc": float(trades["pnl_usdc"].sum()) if not trades.empty else 0.0,
                 **train_stats,
             }

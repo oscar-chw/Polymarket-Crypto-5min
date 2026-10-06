@@ -173,6 +173,7 @@ flowchart TB
   TP["TAKE_PROFIT<br/>p ≥ entry +<br/>take_profit"]:::step
   MH["MAX_HOLD_EXIT<br/>at last<br/>path price"]:::step
   HS["HOLD_TO_SETTLEMENT<br/>pays 1 or 0"]:::key
+  MN["MAX_HOLD_NO_PRICE<br/>no point in<br/>hold window"]:::gate
   X1[("early-exit PnL:<br/>exit − entry −<br/>both fees")]:::out
   X2[("settlement PnL:<br/>payout − entry −<br/>entry fee")]:::out
 
@@ -184,11 +185,13 @@ flowchart TB
   Q -->|"checked<br/>3rd"| TP
   Q -->|"path ends,<br/>no trigger,<br/>max_hold set"| MH
   Q ==>|"no trigger and<br/>no max_hold,<br/>or empty path"| HS
+  Q -->|"empty path,<br/>max_hold set"| MN
   SL -->|"sell at p,<br/>exit fee"| X1
   TG -->|"sell at p,<br/>exit fee"| X1
   TP -->|"sell at p,<br/>exit fee"| X1
   MH -->|"sell at p,<br/>exit fee"| X1
   HS ==>|"settled Polymarket<br/>outcome"| X2
+  MN -->|"settled, counted<br/>per fold and run"| X2
 
   classDef data fill:#dbeafe,stroke:#1d4ed8,color:#0b1220
   classDef step fill:#f1f5f9,stroke:#475569,color:#0b1220
