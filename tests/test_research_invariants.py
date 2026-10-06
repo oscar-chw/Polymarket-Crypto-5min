@@ -12,7 +12,12 @@ import pandas as pd
 import polymarket_crypto_5min.walk_forward as walk_forward_module
 from polymarket_crypto_5min.clients import BinanceClient
 from polymarket_crypto_5min.exit_backtest import ExitPolicy, simulate_exit_policy
-from polymarket_crypto_5min.features import shares_for_stake, taker_fee_per_share
+from polymarket_crypto_5min.features import (
+    ENTRY_PRICE_RULE,
+    build_training_frame,
+    shares_for_stake,
+    taker_fee_per_share,
+)
 from polymarket_crypto_5min.resolution import append_resolved_outcomes
 from polymarket_crypto_5min.walk_forward import WalkForwardConfig, WalkForwardRule, make_side_candidates
 
@@ -214,3 +219,68 @@ def test_backtest_cli_main_path_imports_and_parses_help() -> None:
     )
     assert result.returncode == 0
     assert "Build features, search strategy thresholds" in result.stdout
+
+
+def _one_market_frame(prints: list[tuple[str, float]], *, snapshot_seconds_before_close: int = 45) -> pd.DataFrame:
+    start = pd.Timestamp("2026-07-05T12:00:00Z")
+    markets = pd.DataFrame(
+        [
+            {
+                "condition_id": "m1",
+                "start_ts": int(start.timestamp()),
+                "end_ts": int(start.timestamp()) + 300,
+                "up_asset_id": "up1",
+                "down_asset_id": "down1",
+                "outcomes": ["Up", "Down"],
+                "outcome_prices": [1, 0],
+            }
+        ]
+    )
+    candles = pd.DataFrame(
+        {
+            "ts": pd.date_range(start - pd.Timedelta(minutes=5), periods=11, freq="1min", tz="UTC"),
+            "close": [100.0] * 11,
+        }
+    )
+    poly_prices = pd.DataFrame(
+        {
+            "condition_id": ["m1"] * len(prints),
+            "asset_id": ["up1"] * len(prints),
+            "ts": pd.to_datetime([ts for ts, _ in prints], utc=True),
+            "p": [p for _, p in prints],
+        }
+    )
+    return build_training_frame(
+        markets, candles, poly_prices, snapshot_seconds_before_close=snapshot_seconds_before_close
+    )
+
+
+def test_entry_price_ignores_prints_from_before_the_window_opened() -> None:
+    # Snapshot is 12:04:15. The only print at or before it is from 11:52, when
+    # this market's window had not opened; 0.88 at 12:04:20 is after the decision.
+    frame = _one_market_frame([("2026-07-05T11:52:00Z", 0.50), ("2026-07-05T12:04:20Z", 0.88)])
+
+    assert pd.isna(frame.loc[0, "market_up_price"])
+    assert pd.isna(frame.loc[0, "market_up_price_ts"])
+
+
+def test_entry_price_ignores_a_fresh_print_from_before_the_window_opened() -> None:
+    # Snapshot 12:00:10; the 11:59:50 print is only 20 s old, so the age bound
+    # alone would accept it, but the market did not exist yet.
+    frame = _one_market_frame([("2026-07-05T11:59:50Z", 0.50)], snapshot_seconds_before_close=290)
+
+    assert pd.isna(frame.loc[0, "market_up_price"])
+
+
+def test_entry_price_ignores_in_window_prints_older_than_the_age_bound() -> None:
+    frame = _one_market_frame([("2026-07-05T12:01:00Z", 0.50)])
+
+    assert pd.isna(frame.loc[0, "market_up_price"])
+
+
+def test_entry_price_uses_fresh_in_window_print_and_records_the_rule() -> None:
+    frame = _one_market_frame([("2026-07-05T12:01:00Z", 0.50), ("2026-07-05T12:04:00Z", 0.61)])
+
+    assert frame.loc[0, "market_up_price"] == 0.61
+    assert frame.loc[0, "market_up_price_ts"] == pd.Timestamp("2026-07-05T12:04:00Z")
+    assert frame.loc[0, "entry_price_rule"] == ENTRY_PRICE_RULE

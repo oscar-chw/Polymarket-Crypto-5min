@@ -13,6 +13,13 @@ from .config import DEFAULT_CRYPTO_TAKER_FEE_RATE
 from .resolution import append_resolved_outcomes
 from .utils import parse_jsonish, sigmoid, to_float
 
+# The backtest has no historical order book, so it cannot fill at the ask that
+# ``live_signal.py`` pays. It fills at the last CLOB/trade print inside the
+# market window, at or before the decision, and no older than the configured
+# age. That is optimistic against live fills by at least half the spread.
+ENTRY_PRICE_RULE = "last_print_in_window"
+DEFAULT_MAX_ENTRY_PRICE_AGE_SECONDS = 60.0
+
 
 def load_csv(path: str | Path, *, parse_dates: list[str] | None = None) -> pd.DataFrame:
     frame = pd.read_csv(path)
@@ -130,6 +137,7 @@ def build_training_frame(
     allow_gamma_prices: bool = False,
     require_resolved_outcome: bool = True,
     allow_external_btc_outcome_fallback: bool = False,
+    max_entry_price_age_seconds: float = DEFAULT_MAX_ENTRY_PRICE_AGE_SECONDS,
 ) -> pd.DataFrame:
     """Build one point-in-time row per market for threshold research.
 
@@ -140,6 +148,10 @@ def build_training_frame(
     By default, market entry prices are read from point-in-time CLOB/trade price
     history. Set ``allow_gamma_prices=True`` only for exploratory debugging;
     closed-market Gamma prices may contain post-resolution information.
+
+    Entry prices follow ``ENTRY_PRICE_RULE``: the last print with
+    ``start_dt <= ts <= snapshot_dt`` and age at most
+    ``max_entry_price_age_seconds``. Rows with no such print get no price.
     """
     required = {"condition_id", "start_ts", "end_ts"}
     missing = required - set(markets.columns)
@@ -200,11 +212,19 @@ def build_training_frame(
     if rows.empty:
         return rows
 
-    rows["market_up_price"] = market_price_asof(poly_price_history, rows, asset_col="up_asset_id")
+    up_hist = market_price_asof(
+        poly_price_history, rows, asset_col="up_asset_id", max_age_seconds=max_entry_price_age_seconds
+    )
+    rows["market_up_price"] = up_hist["p"]
+    rows["market_up_price_ts"] = up_hist["ts"]
     if "market_down_price" not in rows:
         rows["market_down_price"] = np.nan
-    down_hist = market_price_asof(poly_price_history, rows, asset_col="down_asset_id")
-    rows["market_down_price"] = rows["market_down_price"].where(rows["market_down_price"].notna(), down_hist)
+    down_hist = market_price_asof(
+        poly_price_history, rows, asset_col="down_asset_id", max_age_seconds=max_entry_price_age_seconds
+    )
+    rows["market_down_price"] = rows["market_down_price"].where(rows["market_down_price"].notna(), down_hist["p"])
+    rows["market_down_price_ts"] = down_hist["ts"]
+    rows["entry_price_rule"] = ENTRY_PRICE_RULE
 
     if allow_gamma_prices:
         rows["market_up_price"] = rows["market_up_price"].where(
@@ -283,18 +303,34 @@ def _datetime64ns_utc(values: pd.Series | pd.DatetimeIndex) -> pd.Series:
     return series.astype("datetime64[ns, UTC]")
 
 
-def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataFrame, *, asset_col: str) -> pd.Series:
+def market_price_asof(
+    poly_price_history: pd.DataFrame | None,
+    markets: pd.DataFrame,
+    *,
+    asset_col: str,
+    max_age_seconds: float = DEFAULT_MAX_ENTRY_PRICE_AGE_SECONDS,
+) -> pd.DataFrame:
+    """Return ``p`` and its print time ``ts`` under ``ENTRY_PRICE_RULE``.
+
+    History is downloaded with padding before the window opens; without the
+    window and age bounds a print from before the market existed could become
+    the entry price.
+    """
+    result = pd.DataFrame(
+        {"p": np.nan, "ts": pd.Series(pd.NaT, index=markets.index, dtype="datetime64[ns, UTC]")},
+        index=markets.index,
+    )
     if poly_price_history is None or poly_price_history.empty or asset_col not in markets.columns:
-        return pd.Series(np.nan, index=markets.index)
+        return result
     hist = poly_price_history.copy()
     if not {"condition_id", "asset_id", "ts", "p"}.issubset(hist.columns):
-        return pd.Series(np.nan, index=markets.index)
+        return result
     hist["condition_id"] = hist["condition_id"].astype(str)
     hist["asset_id"] = hist["asset_id"].astype(str)
     hist["ts"] = _datetime64ns_utc(pd.to_datetime(hist["ts"], utc=True, errors="coerce"))
     hist["p"] = pd.to_numeric(hist["p"], errors="coerce")
     hist = hist.dropna(subset=["condition_id", "asset_id", "ts", "p"])
-    result = pd.Series(np.nan, index=markets.index, dtype="float64")
+    tolerance = pd.Timedelta(seconds=float(max_age_seconds))
     # Groupwise merge_asof is robust and easy to audit for this dataset size.
     for condition_id, group in markets.groupby(markets["condition_id"].astype(str)):
         h = hist[hist["condition_id"].eq(condition_id)]
@@ -307,10 +343,17 @@ def market_price_asof(poly_price_history: pd.DataFrame | None, markets: pd.DataF
             if h_asset.empty:
                 continue
             lookup = pd.DataFrame(
-                {"_index": list(idx), "ts": _datetime64ns_utc(markets.loc[idx, "snapshot_dt"])}
+                {
+                    "_index": list(idx),
+                    "ts": _datetime64ns_utc(markets.loc[idx, "snapshot_dt"]).reset_index(drop=True),
+                    "_window_start": _datetime64ns_utc(markets.loc[idx, "start_dt"]).reset_index(drop=True),
+                }
             ).sort_values("ts")
-            merged = pd.merge_asof(lookup, h_asset[["ts", "p"]], on="ts", direction="backward")
-            result.loc[merged["_index"].to_numpy()] = merged["p"].to_numpy()
+            right = h_asset[["ts", "p"]].assign(price_ts=h_asset["ts"])
+            merged = pd.merge_asof(lookup, right, on="ts", direction="backward", tolerance=tolerance)
+            merged = merged[merged["price_ts"].ge(merged["_window_start"])]
+            result.loc[merged["_index"].to_numpy(), "p"] = merged["p"].to_numpy()
+            result.loc[merged["_index"].to_numpy(), "ts"] = merged["price_ts"].to_numpy()
     return result
 
 
