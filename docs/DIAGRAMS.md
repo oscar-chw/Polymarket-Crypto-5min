@@ -178,7 +178,7 @@ flowchart TB
 
   E0 -->|"rule_mask true"| E1
   E1 -->|"deadline = end_dt or<br/>entry + max_hold"| PATH
-  PATH -->|"prices after end_dt<br/>never read"| Q
+  PATH -->|"prices at or after<br/>end_dt never read"| Q
   Q -->|"checked<br/>1st"| SL
   Q -->|"checked<br/>2nd"| TG
   Q -->|"checked<br/>3rd"| TP

@@ -166,7 +166,7 @@ def _simulate_one_exit(
     if policy.max_hold_seconds is not None:
         deadline = min(deadline, entry_dt + pd.Timedelta(seconds=int(policy.max_hold_seconds)))
 
-    path = _slice_exit_path(hist_by_asset, condition_id, asset_id, entry_dt, deadline)
+    path = _slice_exit_path(hist_by_asset, condition_id, asset_id, entry_dt, deadline, end_dt)
 
     exit_reason = "HOLD_TO_SETTLEMENT"
     exit_dt = end_dt
@@ -249,13 +249,16 @@ def _slice_exit_path(
     asset_id: str,
     entry_dt: pd.Timestamp,
     deadline: pd.Timestamp,
+    end_dt: pd.Timestamp,
 ) -> pd.DataFrame:
     path_source = hist_by_asset.get((condition_id, asset_id))
     if path_source is None or path_source.empty:
         return pd.DataFrame(columns=["condition_id", "asset_id", "ts", "p"])
     ts = path_source["ts"]
     start_idx = int(ts.searchsorted(entry_dt, side="right"))
-    end_idx = int(ts.searchsorted(deadline, side="right"))
+    # A point stamped at end_dt is the settlement instant, when nothing can be
+    # traded; letting it fire relabels settlement as an early exit.
+    end_idx = min(int(ts.searchsorted(deadline, side="right")), int(ts.searchsorted(end_dt, side="left")))
     if end_idx <= start_idx:
         return path_source.iloc[0:0]
     return path_source.iloc[start_idx:end_idx]

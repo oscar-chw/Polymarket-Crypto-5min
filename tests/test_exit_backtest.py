@@ -82,3 +82,34 @@ def test_exit_policy_stop_loss_and_losing_trade_audit() -> None:
     losses = losing_trades(trades)
     assert len(losses) == 1
     assert losses.loc[0, "condition_id"] == "m2"
+
+
+def test_exit_never_fills_at_the_settlement_instant() -> None:
+    entries = pd.DataFrame(
+        [
+            {
+                "condition_id": "m3",
+                "side": "UP",
+                "snapshot_dt": pd.Timestamp("2026-07-05T12:04:15Z"),
+                "end_dt": pd.Timestamp("2026-07-05T12:05:00Z"),
+                "market_price": 0.50,
+                "up_asset_id": "up3",
+                "down_asset_id": "down3",
+                "won": False,
+            }
+        ]
+    )
+    prices = pd.DataFrame(
+        {
+            "condition_id": ["m3"],
+            "asset_id": ["up3"],
+            "ts": pd.to_datetime(["2026-07-05T12:05:00Z"]),
+            "p": [0.01],
+        }
+    )
+    trades = simulate_exit_policy(
+        entries, prices, ExitPolicy(take_profit=None, target_price=None, stop_loss=0.05), stake_usdc=10
+    )
+    assert trades.loc[0, "exit_reason"] == "HOLD_TO_SETTLEMENT"
+    assert trades.loc[0, "path_points_seen"] == 0
+    assert trades.loc[0, "exit_price"] == 0.0
