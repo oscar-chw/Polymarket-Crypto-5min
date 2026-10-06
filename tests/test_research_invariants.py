@@ -354,10 +354,15 @@ def test_fold_leakage_compares_training_labels_with_test_decision_time() -> None
     assert folds.loc[0, "test_first_decision_dt"] == pd.Timestamp("2026-07-05T12:09:45Z")
 
 
-def _run_full_history_runner(tmp_path: Path, *, overlap: bool) -> tuple[subprocess.CompletedProcess[str], Path]:
+def _run_full_history_runner(
+    tmp_path: Path, *, overlap: bool, stale_outputs: tuple[str, ...] = ()
+) -> tuple[subprocess.CompletedProcess[str], Path]:
     raw = tmp_path / "raw"
     out = tmp_path / "out"
     raw.mkdir()
+    out.mkdir()
+    for name in stale_outputs:
+        (out / name).write_text("stale from a previous run")
     candidates = _overlapping_fold_candidates(overlap=overlap).drop_duplicates("condition_id")
     markets = pd.DataFrame(
         {
@@ -430,6 +435,20 @@ def test_full_history_runner_exits_nonzero_on_fold_leakage(tmp_path: Path) -> No
     assert (out / "side_candidates.csv").is_file()
     assert not (out / "walk_forward_trades.csv").exists()
     assert not (out / "walk_forward_metrics.csv").exists()
+
+
+def test_full_history_runner_failure_removes_previous_runs_outputs(tmp_path: Path) -> None:
+    stale = (
+        "walk_forward_trades.csv",
+        "walk_forward_metrics.csv",
+        "walk_forward_equity_curve.csv",
+        "walk_forward_selected_rules.csv",
+        "manifest.json",
+    )
+    result, out = _run_full_history_runner(tmp_path, overlap=True, stale_outputs=stale)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert [name for name in stale if (out / name).exists()] == []
 
 
 def test_full_history_runner_writes_results_when_folds_do_not_leak(tmp_path: Path) -> None:

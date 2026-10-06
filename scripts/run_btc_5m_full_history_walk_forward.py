@@ -27,6 +27,18 @@ from polymarket_crypto_5min.metrics import equity_curve, performance_metrics
 from polymarket_crypto_5min.walk_forward import WalkForwardConfig, make_side_candidates, walk_forward_backtest
 
 
+STALE_OUTPUTS = (
+    "feature_frame.csv",
+    "side_candidates.csv",
+    "walk_forward_folds.csv",
+    "walk_forward_trades.csv",
+    "walk_forward_selected_rules.csv",
+    "walk_forward_metrics.csv",
+    "walk_forward_equity_curve.csv",
+    "manifest.json",
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw-dir", default="data/raw/full_btc_5m")
@@ -56,6 +68,10 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # A failing run in a reused out-dir must not leave the previous run's results
+    # beside its own failing folds file, where they read as this run's output.
+    for name in STALE_OUTPUTS:
+        (out_dir / name).unlink(missing_ok=True)
 
     markets_path = raw_dir / "btc_5m_markets.csv"
     up_prices_path = raw_dir / "btc_5m_up_price_history.csv"
