@@ -201,6 +201,6 @@ flowchart TB
   classDef key  fill:#ede9fe,stroke:#6d28d9,color:#0b1220,stroke-width:2px
 ```
 
-In the cited availability-safe run, 15 of the 16 selected trades had no post-entry price path, so they took the empty-path branch to settlement (see the [README limitations](../README.md#limitations)).
+In the cited availability-safe run, 15 of the 16 selected trades had no price point after entry, so they took the empty-path branch and were held to settlement, not exited. That run predates `MAX_HOLD_NO_PRICE` and the settlement-instant cutoff (see the [README limits](../README.md#limits)).
 
 Where in the code: `polymarket_crypto_5min/exit_backtest.py` (`simulate_exit_policy`, `_simulate_one_exit`, `_slice_exit_path`, `_exit_reason`), `polymarket_crypto_5min/features.py` (`taker_fee_per_share`); test: `tests/test_research_invariants.py::test_exit_pnl_deducts_entry_and_exit_fees_and_ignores_post_resolution_prices`.

@@ -131,17 +131,18 @@ Markets are ordered by end time; each fold trains on every earlier market and te
 | Max realized drawdown | −$34.03 (−1.69%) | [docs/results.md](docs/results.md) |
 | Profit factor; Sharpe per trade / daily | 0.69; −0.14 / −7.57 | [docs/results.md](docs/results.md) |
 | PBO, deflated Sharpe | unavailable: the policy-by-time return matrix was not retained | [docs/results.md](docs/results.md) |
-| Offline tests | 27 pass, including the no-look-ahead and chronological-fold invariants | [tests/](tests/) |
+| Offline tests | 42 pass, including the no-look-ahead, entry-price, exit-timing and chronological-fold invariants | [tests/](tests/) |
 
 The availability-safe selected result is negative. Metrics come from a local generated artifact excluded from Git; its
-hash, the run manifest and the equity chart are in [docs/results.md](docs/results.md).
+hash, the run manifest and the equity chart are in [docs/results.md](docs/results.md). These figures predate the
+2026-10-06 timing fixes and were not re-run; the biases that still apply to them are under [Limits](#limits).
 
 ## Quick start
 
 ```bash
 git clone https://github.com/oscar-chw/Polymarket-Crypto-5min.git && cd Polymarket-Crypto-5min
 uv sync --python 3.12 --extra dev --frozen
-uv run pytest -q                                          # expect: 27 passed
+uv run pytest -q                                          # expect: 42 passed
 uv run python scripts/download_history.py --max-pages 2   # bounded public-data API-shape check
 uv run python scripts/run_btc_5m_full_history_walk_forward.py --initial-capital 2000 --stake 10 \
   --train-markets 400 --test-markets 100 --price-source both   # full download, base walk-forward
@@ -170,7 +171,14 @@ Docs: see [docs/README.md](docs/README.md).
 
 - No order signing, order placement, wallet/account integration, live fills, queue position, cancellation logic, executable depth, or production latency evidence is present.
 - Raw and generated datasets are intentionally ignored. The committed plot is a static derivative, not the underlying run artifact; reacquire public inputs and compare hashes before claiming reproduction.
-- 15 of the 16 selected trades in the cited run had no post-entry price path, materially limiting exit-policy evidence.
+- 15 of the 16 selected trades in the cited run had no price point after entry, so they were held to settlement rather than exited. The cited result is therefore close to a hold-to-settlement result under exit-aware selection, and it is not evidence that any exit policy works. Those rows were logged as `HOLD_TO_SETTLEMENT` under whichever exit policy had been selected. Since 2026-10-06 the code logs a max-hold policy with no price point as `MAX_HOLD_NO_PRICE` and counts these trades, but the cited run predates that change.
+- **2026-10-06: the Results figures were not re-run after the timing fixes.** The run's inputs (git-ignored local files from July 2026, known only by their hashes in [docs/results.md](docs/results.md)) are no longer available, and the market set cannot be rebuilt exactly from the public APIs. The figures are left as published. Known biases that still apply to them:
+  - Entry fills used the last print of any age, which could predate the market window, while live trading buys at the ask. Filling at a print instead of the ask makes the figures optimistic by at least half the spread per trade. The direction of the stale-print error is not known.
+  - An exit could fire on a price stamped at the settlement instant. This can only affect the one trade that did not settle, and the direction is not known.
+  - The fold check compared training settlement with test settlement, not with test decisions, so "chronological leakage passed" did not rule out a training label that settled after a test decision. Whether any fold leaked is not known. Any leak would make the figures optimistic.
+  - BTC candle joins had no staleness limit. Whether the candle file had gaps is not known, and so the direction is not known.
+  - Rule selection still calibrates training rows on their own outcomes (not fixed). This biases which rule is chosen, not the out-of-sample scoring of the test folds.
+  - The ET title-parsing fix (DST fall-back hour, Dec 31) is not expected to matter: the run used 3,000 markets (about 10 days of 5-minute markets) ending in July 2026, a span with no DST change and no Dec 31.
 - Drawdown is realized event-step drawdown, not mark-to-market drawdown from order-book snapshots during open positions.
 - Rule/policy selection is trial-exposed; without the retained policy-by-time matrix, PBO and deflated Sharpe cannot be reconstructed.
 
