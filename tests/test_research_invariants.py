@@ -287,6 +287,15 @@ def test_entry_price_uses_fresh_in_window_print_and_records_the_rule() -> None:
     assert frame.loc[0, "entry_price_rule"] == ENTRY_PRICE_RULE
 
 
+def test_down_entry_price_is_never_derived_from_the_up_print() -> None:
+    # A fresh UP print and no DOWN print: DOWN must have no price, not 1 - UP.
+    frame = _one_market_frame([("2026-07-05T12:04:00Z", 0.61)])
+
+    assert frame.loc[0, "market_up_price"] == 0.61
+    assert pd.isna(frame.loc[0, "market_down_price"])
+    assert pd.isna(frame.loc[0, "market_down_price_ts"])
+
+
 def _overlapping_fold_candidates(*, overlap: bool = True) -> pd.DataFrame:
     # Ordered by end_dt, m1 is the last training market and m2 the first test
     # market. With overlap, m2 settles after m1 but decides (12:09:45) before

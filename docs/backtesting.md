@@ -13,8 +13,9 @@ Key rules:
    decision (`train_end_dt < test_first_decision_dt`). All three walk-forward runners exit non-zero when any fold fails it.
 5. Entry prices follow `ENTRY_PRICE_RULE` in `features.py`: the last CLOB/trade print inside the market window, at or
    before the decision, and no older than `max_entry_price_age_seconds` (default 60 s); otherwise the row has no
-   price. This is a print, not the ask that `live_signal.py` buys at, so backtest fills are better than live fills by
-   at least half the spread.
+   price. Each side uses only its own prints; DOWN is never derived as 1 - UP. This is a print, not the ask that
+   `live_signal.py` buys at, so backtest fills are optimistic in expectation; the size is unknown, because a print can
+   be a trade at the ask.
 6. Fixed-threshold reports from `scripts/backtest_thresholds.py` are smoke tests, not final performance reports.
 
 Example for a $2,000 USD bankroll:

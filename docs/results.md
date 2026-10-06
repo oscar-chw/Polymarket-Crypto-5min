@@ -21,7 +21,7 @@ Dec 31. The run's inputs are git-ignored local files known only by the hashes un
 are no longer available, and the market set cannot be rebuilt exactly from the public APIs, so the figures are left as
 published, not regenerated. Known biases that still apply to them:
 
-- Entry at the last print instead of the ask makes them optimistic by at least half the spread per trade. Prints could
+- Entry at the last print instead of the ask makes them optimistic in expectation, by an unknown amount (a print can be a trade at the ask). Prints could
   also be stale or predate the market window; the direction of that error is not known.
 - 15 of the 16 trades were held to settlement because no price point followed entry, so the result is close to a
   hold-to-settlement result and is not evidence that any exit policy works. Only the remaining trade could have exited

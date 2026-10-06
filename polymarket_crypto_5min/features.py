@@ -24,7 +24,9 @@ BTC_FEATURE_LOOKUPS = ("start", "snapshot", "1m_ago", "3m_ago")
 # The backtest has no historical order book, so it cannot fill at the ask that
 # ``live_signal.py`` pays. It fills at the last CLOB/trade print inside the
 # market window, at or before the decision, and no older than the configured
-# age. That is optimistic against live fills by at least half the spread.
+# age. A print can be a trade at the ask or at the bid, so against live fills
+# this is optimistic in expectation; the size of the gap is unknown. Each side
+# takes only its own prints: DOWN is never derived as 1 - UP.
 ENTRY_PRICE_RULE = "last_print_in_window"
 DEFAULT_MAX_ENTRY_PRICE_AGE_SECONDS = 60.0
 
@@ -259,9 +261,6 @@ def build_training_frame(
         rows["market_down_price"] = rows["market_down_price"].where(
             rows["market_down_price"].notna(), rows.get("gamma_down_price")
         )
-    rows["market_down_price"] = rows["market_down_price"].where(
-        rows["market_down_price"].notna(), 1.0 - rows["market_up_price"]
-    )
 
     rows["model_prob_up"] = model_probability_up(
         score_bps=rows["score_bps"],
