@@ -131,7 +131,7 @@ flowchart TB
     S1["select entry rule<br/>and exit policy<br/>on train"]:::step
     C2["calibrate test<br/>reference =<br/>train only"]:::key
     EV["simulate<br/>test trades"]:::key
-    LK{"train ends<br/>before test<br/>starts?"}:::gate
+    LK{"train labels<br/>settle before<br/>1st test<br/>decision?"}:::gate
     REP[("fold report row")]:::out
     BAD["SystemExit:<br/>Leakage check failed"]:::gate
     TR -->|"wins per<br/>price/score bin"| C1
@@ -142,7 +142,7 @@ flowchart TB
     C2 ==>|"calibrated<br/>test rows"| EV
     EV ==>|"test PnL"| REP
     TR -->|"train_end_dt"| LK
-    TE -->|"test_start_dt"| LK
+    TE -->|"test_first_<br/>decision_dt"| LK
     LK -->|"recorded as<br/>leakage_check_passed"| REP
     REP -->|"false in<br/>any fold"| BAD
   end
@@ -156,7 +156,7 @@ flowchart TB
   classDef key  fill:#ede9fe,stroke:#6d28d9,color:#0b1220,stroke-width:2px
 ```
 
-Where in the code: `polymarket_crypto_5min/exit_backtest.py` (`walk_forward_exit_backtest`, `select_entry_exit_rules_from_training`), `polymarket_crypto_5min/walk_forward.py` (`calibrate_candidates`, `walk_forward_backtest`), `scripts/exit_aware_walk_forward.py` (the leakage exit); tests: `tests/test_research_invariants.py::test_walk_forward_test_calibration_uses_preceding_markets_only`, `::test_walk_forward_uses_expanding_nonoverlapping_test_boundaries`.
+Where in the code: `polymarket_crypto_5min/exit_backtest.py` (`walk_forward_exit_backtest`, `select_entry_exit_rules_from_training`), `polymarket_crypto_5min/walk_forward.py` (`calibrate_candidates`, `walk_forward_backtest`), `scripts/exit_aware_walk_forward.py`, `scripts/walk_forward_backtest.py` and `scripts/run_btc_5m_full_history_walk_forward.py` (the leakage exits); tests: `tests/test_research_invariants.py::test_walk_forward_test_calibration_uses_preceding_markets_only`, `::test_walk_forward_uses_expanding_nonoverlapping_test_boundaries`.
 
 ## 4. Exit-aware backtest of one trade
 

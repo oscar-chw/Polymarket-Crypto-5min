@@ -99,7 +99,7 @@ def main() -> None:
     print(f"Wrote equity curve to {curve_path}")
 
     if not fold_report.empty and not bool(fold_report["leakage_check_passed"].all()):
-        raise SystemExit("Leakage check failed: at least one fold has train_end_dt >= test_start_dt")
+        raise SystemExit("Leakage check failed: at least one fold has train_end_dt >= test_first_decision_dt")
 
 
 if __name__ == "__main__":

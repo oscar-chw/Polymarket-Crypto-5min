@@ -140,8 +140,17 @@ def main() -> None:
         min_bin_observations=args.min_bin_observations,
     )
     wf_trades, folds, rules = walk_forward_backtest(candidates, config=config)
-    wf_trades.to_csv(out_dir / "walk_forward_trades.csv", index=False)
     folds.to_csv(out_dir / "walk_forward_folds.csv", index=False)
+    leakage_violations = (
+        int((~folds["leakage_check_passed"].fillna(False).astype(bool)).sum()) if not folds.empty else None
+    )
+    if leakage_violations:
+        # Fail before writing trades, metrics or equity: a leaking run must not
+        # leave results that look like a finished one.
+        raise SystemExit(
+            f"Leakage check failed: {leakage_violations} fold(s) have train_end_dt >= test_first_decision_dt"
+        )
+    wf_trades.to_csv(out_dir / "walk_forward_trades.csv", index=False)
     rules.to_csv(out_dir / "walk_forward_selected_rules.csv", index=False)
     metrics = performance_metrics(wf_trades, initial_capital=args.initial_capital)
     metrics.to_csv(out_dir / "walk_forward_metrics.csv", index=False)
@@ -159,9 +168,7 @@ def main() -> None:
         "stake": args.stake,
         "train_markets": args.train_markets,
         "test_markets": args.test_markets,
-        "leakage_violations": int((~folds.get("leakage_check_passed", pd.Series(dtype=bool)).fillna(False)).sum())
-        if not folds.empty
-        else None,
+        "leakage_violations": leakage_violations,
         "mdd_is_realized_only": True,
         "mark_to_market_mdd": "not available without orderbook snapshots while positions are open",
     }

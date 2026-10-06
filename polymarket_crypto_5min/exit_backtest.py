@@ -391,6 +391,7 @@ def walk_forward_exit_backtest(
     prepared_prices = group_price_history(price_history)
     rows = attach_candidate_asset_ids(candidates).copy()
     rows["end_dt"] = pd.to_datetime(rows["end_dt"], utc=True, errors="coerce")
+    rows["snapshot_dt"] = pd.to_datetime(rows["snapshot_dt"], utc=True, errors="coerce")
     rows = rows.dropna(subset=["condition_id", "end_dt", "market_price", "won", "snapshot_dt"]).sort_values(
         ["end_dt", "condition_id", "side"]
     )
@@ -414,7 +415,10 @@ def walk_forward_exit_backtest(
         test = rows[rows["condition_id"].astype(str).isin(test_ids)].copy()
         train_end = train["end_dt"].max()
         test_start = test["end_dt"].min()
-        leakage_ok = bool(train_end < test_start)
+        # Training labels must settle before the first test decision, not
+        # merely before the first test settlement.
+        test_first_decision = test["snapshot_dt"].min()
+        leakage_ok = bool(train_end < test_first_decision)
         calibrated_train = calibrate_candidates(
             train, train, alpha=cfg.calibration_alpha, min_group_observations=cfg.min_bin_observations
         )
@@ -434,6 +438,7 @@ def walk_forward_exit_backtest(
                     "test_markets": len(test_ids),
                     "train_end_dt": train_end,
                     "test_start_dt": test_start,
+                    "test_first_decision_dt": test_first_decision,
                     "leakage_check_passed": leakage_ok,
                     "test_trades": 0,
                     "test_pnl_usdc": 0.0,
@@ -458,6 +463,7 @@ def walk_forward_exit_backtest(
                 "train_end_dt": train_end,
                 "test_start_dt": test_start,
                 "test_end_dt": test["end_dt"].max(),
+                "test_first_decision_dt": test_first_decision,
                 "leakage_check_passed": leakage_ok,
                 "test_trades": int(len(trades)),
                 "test_max_hold_no_price_trades": int(trades["exit_reason"].eq(MAX_HOLD_NO_PRICE).sum())

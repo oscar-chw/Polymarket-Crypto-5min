@@ -283,13 +283,15 @@ def walk_forward_backtest(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run a strict expanding-window walk-forward backtest.
 
-    Returns ``(trades, fold_report, selected_rules)``. Every row in the test set
-    has ``train_end_dt < test_start_dt`` in the fold report.
+    Returns ``(trades, fold_report, selected_rules)``. ``leakage_check_passed``
+    requires every training label to settle before the test fold's first
+    decision: ``train_end_dt < test_first_decision_dt``.
     """
     cfg = config or WalkForwardConfig()
     rules = generate_rule_grid(rule_grid)
     rows = candidates.copy()
     rows["end_dt"] = pd.to_datetime(rows["end_dt"], utc=True, errors="coerce")
+    rows["snapshot_dt"] = pd.to_datetime(rows["snapshot_dt"], utc=True, errors="coerce")
     rows = rows.dropna(subset=["condition_id", "end_dt", "market_price", "won"]).sort_values(["end_dt", "condition_id"])
     ordered_markets = (
         rows[["condition_id", "end_dt"]].drop_duplicates("condition_id").sort_values("end_dt").reset_index(drop=True)
@@ -324,6 +326,11 @@ def walk_forward_backtest(
         selected_rule, train_stats = select_rule_from_training(calibrated_train, config=cfg, rules=rules)
         train_end = train["end_dt"].max()
         test_start = test["end_dt"].min()
+        # Folds are cut by market count, so end_dt ties or overlapping windows
+        # can put a training label after a test decision; compare label time
+        # with decision time, not with test settlement time.
+        test_first_decision = test["snapshot_dt"].min()
+        leakage_ok = bool(train_end < test_first_decision)
         if selected_rule is None:
             fold_rows.append(
                 {
@@ -332,7 +339,8 @@ def walk_forward_backtest(
                     "test_markets": len(test_ids),
                     "train_end_dt": train_end,
                     "test_start_dt": test_start,
-                    "leakage_check_passed": bool(train_end < test_start),
+                    "test_first_decision_dt": test_first_decision,
+                    "leakage_check_passed": leakage_ok,
                     "selected": False,
                     "test_trades": 0,
                     "test_pnl_usdc": 0.0,
@@ -361,7 +369,8 @@ def walk_forward_backtest(
                 "train_end_dt": train_end,
                 "test_start_dt": test_start,
                 "test_end_dt": test["end_dt"].max(),
-                "leakage_check_passed": bool(train_end < test_start),
+                "test_first_decision_dt": test_first_decision,
+                "leakage_check_passed": leakage_ok,
                 "selected": True,
                 "test_trades": int(len(trades)),
                 "test_pnl_usdc": float(trades["pnl_usdc"].sum()) if not trades.empty else 0.0,

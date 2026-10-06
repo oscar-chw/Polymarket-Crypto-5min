@@ -11,7 +11,7 @@ import pandas as pd
 
 import polymarket_crypto_5min.walk_forward as walk_forward_module
 from polymarket_crypto_5min.clients import BinanceClient
-from polymarket_crypto_5min.exit_backtest import ExitPolicy, simulate_exit_policy
+from polymarket_crypto_5min.exit_backtest import ExitPolicy, simulate_exit_policy, walk_forward_exit_backtest
 from polymarket_crypto_5min.features import (
     ENTRY_PRICE_RULE,
     build_training_frame,
@@ -284,3 +284,147 @@ def test_entry_price_uses_fresh_in_window_print_and_records_the_rule() -> None:
     assert frame.loc[0, "market_up_price"] == 0.61
     assert frame.loc[0, "market_up_price_ts"] == pd.Timestamp("2026-07-05T12:04:00Z")
     assert frame.loc[0, "entry_price_rule"] == ENTRY_PRICE_RULE
+
+
+def _overlapping_fold_candidates(*, overlap: bool = True) -> pd.DataFrame:
+    # Ordered by end_dt, m1 is the last training market and m2 the first test
+    # market. With overlap, m2 settles after m1 but decides (12:09:45) before
+    # m1 settles (12:10:00), so m1's label is unknown at m2's decision.
+    if overlap:
+        ends = ["12:05:00", "12:10:00", "12:10:30", "12:15:30"]
+    else:
+        ends = ["12:05:00", "12:10:00", "12:15:00", "12:20:00"]
+    rows = []
+    for index, end in enumerate(ends):
+        end_dt = pd.Timestamp(f"2026-07-05T{end}Z")
+        rows.append(
+            {
+                "condition_id": f"m{index}",
+                "end_dt": end_dt,
+                "snapshot_dt": end_dt - pd.Timedelta(seconds=45),
+                "realized_direction": "UP",
+                "market_up_price": 0.60,
+                "market_down_price": 0.40,
+                "model_prob_up": 0.80,
+                "score_bps": 10.0,
+                "momentum_1m_bps": 1.0,
+                "momentum_3m_bps": 1.0,
+                "up_asset_id": f"up{index}",
+                "down_asset_id": f"down{index}",
+            }
+        )
+    return make_side_candidates(pd.DataFrame(rows))
+
+
+def test_fold_leakage_compares_training_labels_with_test_decision_time() -> None:
+    config = WalkForwardConfig(train_markets=2, test_markets=2, min_train_trades=1, min_bin_observations=1)
+    candidates = _overlapping_fold_candidates()
+
+    _, folds, _ = walk_forward_module.walk_forward_backtest(
+        candidates,
+        config=config,
+        rule_grid={
+            "min_edge_lower": [-1.0],
+            "min_p_lower": [0.0],
+            "min_price": [0.0],
+            "max_price": [1.0],
+            "min_abs_score_bps": [0.0],
+        },
+    )
+    _, exit_folds, _ = walk_forward_exit_backtest(
+        candidates,
+        pd.DataFrame(columns=["condition_id", "asset_id", "ts", "p"]),
+        config=config,
+        entry_rules=[WalkForwardRule(-1.0, 0.0, 0.0, 1.0, 0.0)],
+        exit_policies=[ExitPolicy(take_profit=0.05, target_price=None, stop_loss=None)],
+    )
+
+    assert folds["leakage_check_passed"].tolist() == [False]
+    assert exit_folds["leakage_check_passed"].tolist() == [False]
+    assert folds.loc[0, "test_first_decision_dt"] == pd.Timestamp("2026-07-05T12:09:45Z")
+
+
+def _run_full_history_runner(tmp_path: Path, *, overlap: bool) -> tuple[subprocess.CompletedProcess[str], Path]:
+    raw = tmp_path / "raw"
+    out = tmp_path / "out"
+    raw.mkdir()
+    candidates = _overlapping_fold_candidates(overlap=overlap).drop_duplicates("condition_id")
+    markets = pd.DataFrame(
+        {
+            "condition_id": candidates["condition_id"],
+            "market_id": candidates["condition_id"],
+            "start_ts": (candidates["end_dt"].astype("int64") // 10**9) - 300,
+            "end_ts": candidates["end_dt"].astype("int64") // 10**9,
+            "up_asset_id": candidates["up_asset_id"],
+            "down_asset_id": candidates["down_asset_id"],
+            "outcomes": '["Up", "Down"]',
+            "outcome_prices": '["1", "0"]',
+        }
+    )
+    markets.to_csv(raw / "btc_5m_markets.csv", index=False)
+    print_ts = candidates["snapshot_dt"] - pd.Timedelta(seconds=15)
+    for role, price in (("up", 0.60), ("down", 0.40)):
+        pd.DataFrame(
+            {
+                "condition_id": candidates["condition_id"],
+                "asset_id": candidates[f"{role}_asset_id"],
+                "t": print_ts.astype("int64") // 10**9,
+                "p": price,
+                "ts": print_ts,
+            }
+        ).to_csv(raw / f"btc_5m_{role}_price_history.csv", index=False)
+    candle_ts = pd.date_range("2026-07-05T11:50:00Z", "2026-07-05T12:25:00Z", freq="1min")
+    pd.DataFrame(
+        {
+            "ts": candle_ts,
+            "close": [100.0 + 0.1 * i for i in range(len(candle_ts))],
+            "timestamp_semantics": "close_available_at",
+        }
+    ).to_csv(raw / "btc_usdt_1m.csv", index=False)
+
+    repo = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_btc_5m_full_history_walk_forward.py",
+            "--raw-dir",
+            str(raw),
+            "--out-dir",
+            str(out),
+            "--skip-existing",
+            "--price-source",
+            "clob",
+            "--train-markets",
+            "2",
+            "--test-markets",
+            "2",
+            "--min-train-trades",
+            "1",
+            "--min-bin-observations",
+            "1",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    return result, out
+
+
+def test_full_history_runner_exits_nonzero_on_fold_leakage(tmp_path: Path) -> None:
+    result, out = _run_full_history_runner(tmp_path, overlap=True)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "Leakage check failed" in result.stderr
+    assert (out / "side_candidates.csv").is_file()
+    assert not (out / "walk_forward_trades.csv").exists()
+    assert not (out / "walk_forward_metrics.csv").exists()
+
+
+def test_full_history_runner_writes_results_when_folds_do_not_leak(tmp_path: Path) -> None:
+    result, out = _run_full_history_runner(tmp_path, overlap=False)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (out / "walk_forward_trades.csv").is_file()
+    assert '"leakage_violations": 0' in result.stdout

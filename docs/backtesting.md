@@ -7,7 +7,8 @@ Key rules:
 1. Payout labels come from settled Polymarket/Gamma market outcome data, not from external BTC candles.
 2. External BTC data is used only for features such as start price, snapshot price, momentum, and diagnostic direction.
 3. Each walk-forward fold trains on earlier markets and tests later markets only.
-4. The fold report includes `leakage_check_passed`; reported runs should require it to be true for every fold.
+4. The fold report includes `leakage_check_passed`: every training label must settle before the test fold's first
+   decision (`train_end_dt < test_first_decision_dt`). All three walk-forward runners exit non-zero when any fold fails it.
 5. Entry prices follow `ENTRY_PRICE_RULE` in `features.py`: the last CLOB/trade print inside the market window, at or
    before the decision, and no older than `max_entry_price_age_seconds` (default 60 s); otherwise the row has no
    price. This is a print, not the ask that `live_signal.py` buys at, so backtest fills are better than live fills by
